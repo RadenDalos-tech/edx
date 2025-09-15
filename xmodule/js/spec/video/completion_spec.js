@@ -5,9 +5,6 @@
         var state, oldOTBD, completionAjaxCall;
 
         beforeEach(function() {
-            console.log('>>> jQuery loaded?', typeof window.$);
-            console.log('>>> ajaxWithPrefix exists?', typeof $.ajaxWithPrefix);
-
             oldOTBD = window.onTouchBasedDevice;
             window.onTouchBasedDevice = jasmine
                 .createSpy('onTouchBasedDevice')

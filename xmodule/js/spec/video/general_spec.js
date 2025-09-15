@@ -2,7 +2,6 @@
 (function(undefined) {
     describe('Video', function() {
         afterEach(function() {
-            console.log('Loading fixture...');
             $('source').remove();
             window.VideoState = {};
             window.VideoState.id = {};
@@ -15,7 +14,6 @@
 
                 beforeEach(function() {
                     loadFixtures('video.html');
-                    console.log("Fixture HTML:", $('#video_124').html());
                     $.cookie.and.returnValue('0.50');
                 });
 
@@ -107,7 +105,6 @@
         describe('YouTube API is not loaded', function() {
             var state;
             beforeEach(function() {
-                console.log('Loading fixture...');
                 window.YT = undefined;
                 state = jasmine.initializePlayerYouTube();
             });

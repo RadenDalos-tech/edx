@@ -22,11 +22,6 @@ var options = {
     sourceFiles: [],
     specFiles: [],
 
-    // fixtureFiles: [
-    //     {pattern: 'fixtures/*.*'},
-    //     {pattern: 'fixtures/hls/**/*.*'}
-    // ],
-
     fixtureFiles: [
     {
         pattern: path.join(__dirname, 'fixtures/*.*'),
