@@ -1,0 +1,57 @@
+name: CI/CD pipeline
+
+on: 
+ push: 
+  branches: [main]
+ pull_request: 
+  branches: [main]
+
+jobs: 
+ build: 
+  runs-on: ubuntu-latest
+
+  steps: 
+  - name: Checkout code
+    uses: actions/cheackout@v3
+
+  - name: Install dependencies
+    run: |
+      sudo apt-get update
+
+  - name: Build application
+    run: |
+      echo "Sborka prilozhenia"
+
+  - name: Save build artifacts
+    uses: actions/upload-arcifact@v3
+    with: 
+     name: build-output
+     path: ./dist/
+
+deploy: 
+  runs-on: ubuntu-latest
+  needs: build
+
+  steps: 
+   - name: Checkout code
+     uses: actions/cheackout@v3
+     
+   - name: Download build artifacts
+     uses: actions/download-actifact@v3
+     with: 
+      name: build-outpot
+
+   - name: Login in Cloud
+     uses: azure/login@v1
+     with: 
+      creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+   - name: Deploy to Cloud 
+     uses: azure/webapps-deploy@v2
+     with: 
+      app-name: edx
+      slot-name: production 
+      package: ./dist/ 
+     
+   
+  
