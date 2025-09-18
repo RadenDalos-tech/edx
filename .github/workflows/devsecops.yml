@@ -1,57 +1,144 @@
-name: CI/CD pipeline
+# Конфигурация CI/CD пайплайна для edX Platform
+name: edX CI/CD Pipeline
 
-on: 
- push: 
-  branches: [main]
- pull_request: 
-  branches: [main]
+on: # События для запуска пайплайна
+  push: # При пуше в репозиторий
+    branches: # Список веток
+      - main # Основная ветка
+      - develop # Ветка разработки
+  pull_request: # При создании pull request
+    branches:
+      - main
+      - develop
 
-jobs: 
- build: 
-  runs-on: ubuntu-latest
+jobs: # Определение всех заданий в пайплайне
 
-  steps: 
-  - name: Checkout code
-    uses: actions/cheackout@v3
+  build: # Задание для сборки проекта
+    runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
+    steps: # Шаги сборки
+      - name: Checkout repository # Клонирование репозитория
+        uses: actions/checkout@v3 # Использование стандартного экшена для чекаута
+        
+      - name: Setup Python environment # Настройка окружения Python
+        uses: actions/setup-python@v4 # Использование экшена для установки Python
+        with:
+          python-version: '3.8' # Указание версии Python
+          
+      - name: Install project dependencies # Установка зависимостей
+        run: | # Выполнение команд
+          sudo apt-get update # Обновление пакетов системы
+          pip install -r requirements/base.txt # Установка базовых зависимостей
+          pip install -r requirements/dev.txt # Установка dev зависимостей
+          
+      - name: Setup edX environment # Настройка окружения edX
+        run: |
+          make requirements # Установка требований проекта
+          make l10n # Настройка локализации
+          
+      - name: Run tests # Запуск тестов
+        run: |
+          make test # Выполнение тестового набора
+          
+      - name: Build Docker image # Сборка Docker образа
+        run: |
+          docker build -t edx-platform:latest . # Сборка образа с тегом latest
 
-  - name: Install dependencies
-    run: |
-      sudo apt-get update
+  deploy: # Задание для деплоя
+    needs: build # Зависимость от успешного завершения сборки
+    runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
+    steps: # Шаги деплоя
+      - name: Checkout repository # Клонирование репозитория
+        uses: actions/checkout@v3
+        
+      - name: Login to Docker Hub # Авторизация в Docker Hub
+        uses: docker/login-action@v2 # Использование экшена для входа в Docker Hub
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }} # Имя пользователя из секретов
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }} # Пароль из секретов
+          
+      - name: Build and push Docker image # Сборка и публикация образа
+        uses: docker/build-push-action@v3 # Использование экшена для сборки и публикации
+        with:
+          context: . # Контекст сборки (текущая директория)
+          push: true # Флаг публикации образа
+          tags: registry.example.com/edx-platform:latest # Тег для публикации
+          
+      - name: Deploy to VPS # Деплой на VPS
+        run: |
+          # Подключение к VPS по SSH
+          ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.VPS_IP }} << EOF
+            # Очистка старых контейнеров
+            docker container prune -f
+            
+            # Загрузка нового образа
+            docker pull {{ secrets.DOCKER_REGISTRY }}/ edx-platform:latest
+            
+            # Запуск контейнера
+            docker run -d --name edx-platform \
+              -p 80:80 \ # Проброс порта 80
+              -e ENV=production \ # Установка переменной окружения
+              registry.example.com/edx-platform:latest
+          EOF
 
-  - name: Build application
-    run: |
-      echo "Sborka prilozhenia"
+  # Статический анализ безопасности
+  sast:
+    needs: build # Зависимость от успешного завершения сборки
+    runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
+    steps: # Шаги выполнения
+    - name: Repository checkout # Клонирование репозитория
+      uses: actions/checkout@v3 # Использование стандартного экшена
+    
+    - name: Python setup # Настройка окружения Python
+      uses: actions/setup-python@v4 # Использование экшена для установки
+      with:
+        python-version: '3.8' # Указание версии Python
+        
+    - name: Security tools installation # Установка инструментов безопасности
+      run: | # Выполнение команд
+        pip install bandit # Установка Bandit для анализа кода
+        npm install -g semgrep # Глобальная установка Semgrep
+      
+    - name: Bandit scan execution # Запуск сканирования Bandit
+      run: | # Выполнение команды
+        bandit -r. -lll -x venv -f json > bandit_report.json # Сканирование и сохранение отчета
+      
+    - name: Semgrep scan execution # Запуск сканирования Semgrep
+      run: | # Выполнение команды
+        semgrep ci --config=auto # Автоматическое сканирование
+      
+    - name: SAST reports upload # Загрузка отчетов
+      uses: actions/upload-artifact@v3 # Использование экшена для загрузки
+      with:
+        name: sast-reports # Имя артефакта
+        path: | # Пути к файлам отчетов
+          bandit_report.json # Отчет Bandit
+          semgrep-results.json # Отчет Semgrep
 
-  - name: Save build artifacts
-    uses: actions/upload-arcifact@v3
-    with: 
-     name: build-output
-     path: ./dist/
-
-deploy: 
-  runs-on: ubuntu-latest
-  needs: build
-
-  steps: 
-   - name: Checkout code
-     uses: actions/cheackout@v3
-     
-   - name: Download build artifacts
-     uses: actions/download-actifact@v3
-     with: 
-      name: build-outpot
-
-   - name: Login in Cloud
-     uses: azure/login@v1
-     with: 
-      creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-   - name: Deploy to Cloud 
-     uses: azure/webapps-deploy@v2
-     with: 
-      app-name: edx
-      slot-name: production 
-      package: ./dist/ 
-     
-   
-  
+  # Динамический анализ безопасности
+  dast:
+    needs: sast # Зависимость от успешного завершения SAST
+    runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
+    steps: # Шаги выполнения
+    - name: Repository checkout # Клонирование репозитория
+      uses: actions/checkout@v3 # Использование стандартного экшена
+    
+    - name: ZAP setup # Настройка ZAP
+      uses: zaproxy/zaproxy-github-action@v1 # Использование экшена ZAP
+      with:
+        zapVersion: '2.11.0' # Версия ZAP для использования
+      
+    - name: ZAP daemon start # Запуск демона ZAP
+      run: | # Выполнение команды
+        zap-cli start -d # Запуск в демодном режиме
+      
+    - name: ZAP scanning # Выполнение сканирования
+      run: | # Выполнение команды сканирования
+        zap-cli quick-scan ${{ secrets.EDX_APP_URL }} \
+        -t 15000 \ # Таймаут сканирования
+        -r dast_report.html # Сохранение отчета
+      
+    - name: DAST reports upload # Загрузка отчетов
+      uses: actions/upload-artifact@v3 # Использование экшена для загрузки
+      with:
+        name: dast-reports # Имя артефакта
+        path: dast_report.html # Путь к отчету
