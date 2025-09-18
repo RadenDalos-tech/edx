@@ -2,6 +2,7 @@
 name: edX CI/CD Pipeline
 
 on: # События для запуска пайплайна
+  workflow_dispatch:
   push: # При пуше в репозиторий
     branches: # Список веток
       - main # Основная ветка
