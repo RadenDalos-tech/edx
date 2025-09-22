@@ -80,53 +80,54 @@ jobs:
           path: trivy-report.json # Путь к файлу отчета
 
   deploy:
-   needs: build, sca # Зависимость от успешного завершения сборки и SCA-сканирования
-   runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
-   steps: # Шаги деплоя
-   - name: Checkout repository # Клонирование репозитория
-   uses: actions/checkout@v3 # Использование стандартного экшена для чекаута
+    needs: [build, sca]  # Зависимость от успешного завершения сборки и SCA-сканирования
+    runs-on: ubuntu-latest  # Запуск на последней версии Ubuntu
+    steps:  # Шаги деплоя
+      - name: Checkout repository  # Клонирование репозитория
+        uses: actions/checkout@v3  # Использование стандартного экшена для чекаута
 
-   - name: Login to Docker Hub # Авторизация в Docker Hub
-   uses: docker/login-action@v2 # Использование специального экшена для входа
-   with: # Параметры для авторизации
-   username: ${{ secrets.DOCKER_HUB_USERNAME }} # Имя пользователя из секретов
-   password: ${{ secrets.DOCKER_HUB_PASSWORD }} # Пароль из секретов
+      - name: Login to Docker Hub  # Авторизация в Docker Hub
+        uses: docker/login-action@v2  # Использование специального экшена для входа
+        with:  # Параметры для авторизации
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}  # Имя пользователя из секретов
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}  # Пароль из секретов
 
-   - name: Build and push Docker image # Сборка и публикация Docker-образа
-   uses: docker/build-push-action@v3 # Использование экшена для сборки и публикации
-   with: # Параметры сборки
-   context:. # Контекст сборки (текущая директория)
-   push: true # Флаг для публикации образа
-   tags: ${{ secrets.DOCKER_REGISTRY }}/edx-platform:latest # Тег для публикации
+      - name: Build and push Docker image  # Сборка и публикация Docker-образа
+        uses: docker/build-push-action@v3  # Использование экшена для сборки и публикации
+        with:  # Параметры сборки
+          context: .  # Контекст сборки (текущая директория)
+          push: true  # Флаг для публикации образа
+          tags: ${{ secrets.DOCKER_REGISTRY }}/edx-platform:latest  # Тег для публикации
 
-   - name: Prepare SSH environment
-   run: | # Отступы должны быть согласованы
-   mkdir -p ~/.ssh
-   ssh-keyscan -H ${{ secrets.VPS_IP }} >> ~/.ssh/known_hosts
-   chmod 600 ~/.ssh/known_hosts
+      - name: Prepare SSH environment
+        run: |  # Отступы должны быть согласованы
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_IP }} >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
-   - name: Deploy to VPS
-   run: |
-   ssh -o StrictHostKeyChecking=accept-new ${{ secrets.DEPLOY_USER }}@${{ secrets.VPS_IP }} << EOF
- 
-   # Очистка старых контейнеров
-   docker container prune -f
- 
-   # Загрузка нового образа
-   docker pull ${{ secrets.DOCKER_REGISTRY }}/edx-platform:latest
- 
-   # Проверка существующего контейнера
-   if "$(docker ps -aq -f name=edx-platform)" ; then
-   docker stop edx-platform
-   docker rm edx-platform
-   fi
- 
-   # Запуск контейнера
-   docker run -d --name edx-platform \
-   -p 80:80 \
-   -e ENV=production \
-   ${{ secrets.DOCKER_REGISTRY }}/edx-platform:latest
-   EOF
+      - name: Deploy to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ${{ secrets.DEPLOY_USER }}@${{ secrets.VPS_IP }} << EOF
+
+          # Очистка старых контейнеров
+          docker container prune -f
+
+          # Загрузка нового образа
+          docker pull ${{ secrets.DOCKER_REGISTRY }}/edx-platform:latest
+
+          # Проверка существующего контейнера
+          if [ "$(docker ps -aq -f name=edx-platform)" ]; then
+            docker stop edx-platform
+            docker rm edx-platform
+          fi
+
+          # Запуск контейнера
+          docker run -d --name edx-platform \
+            -p 80:80 \
+            -e ENV=production \
+            ${{ secrets.DOCKER_REGISTRY }}/edx-platform:latest
+          EOF
+
 
   # Статический анализ безопасности
   sast:
