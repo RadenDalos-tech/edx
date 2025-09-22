@@ -131,63 +131,65 @@ jobs:
 
   # Статический анализ безопасности
   sast:
-   needs: build # Зависимость от успешного завершения сборки
-   runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
-   steps: # Шаги выполнения
-   - name: Repository checkout # Клонирование репозитория
-   uses: actions/checkout@v3 # Использование стандартного экшена
- 
-   - name: Python setup # Настройка окружения Python
-   uses: actions/setup-python@v4 # Использование экшена для установки
-   with:
-   python-version: '3.8' # Указание версии Python
- 
-   - name: Security tools installation # Установка инструментов безопасности
-   run: | # Выполнение команд
-   pip install bandit # Установка Bandit для анализа кода
-   npm install -g semgrep # Глобальная установка Semgrep
- 
-   - name: Bandit scan execution # Запуск сканирования Bandit
-   run: | # Выполнение команды
-   bandit -r. -lll -x venv -f json > bandit_report.json # Сканирование и сохранение отчета
- 
-   - name: Semgrep scan execution # Запуск сканирования Semgrep
-   run: | # Выполнение команды
-   semgrep ci --config=auto # Автоматическое сканирование
-  
-   - name: SAST reports upload # Загрузка отчетов
-   uses: actions/upload-artifact@v3 # Использование экшена для загрузки
-   with:
-   name: sast-reports # Имя артефакта
-   path: | # Пути к файлам отчетов
-   bandit_report.json # Отчет Bandit
-   semgrep-results.json # Отчет Semgrep
+    needs: build # Зависимость от успешного завершения сборки
+    runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
+    steps: # Шаги выполнения
+      - name: Repository checkout # Клонирование репозитория
+        uses: actions/checkout@v3 # Использование стандартного экшена
+
+      - name: Python setup # Настройка окружения Python
+        uses: actions/setup-python@v4 # Использование экшена для установки
+        with:
+          python-version: '3.8' # Указание версии Python
+
+      - name: Security tools installation # Установка инструментов безопасности
+        run: | # Выполнение команд
+          pip install bandit # Установка Bandit для анализа кода
+          npm install -g semgrep # Глобальная установка Semgrep
+
+      - name: Bandit scan execution # Запуск сканирования Bandit
+        run: | # Выполнение команды
+          bandit -r . -lll -x venv -f json > bandit_report.json # Сканирование и сохранение отчета
+
+      - name: Semgrep scan execution # Запуск сканирования Semgrep
+        run: | # Выполнение команды
+          semgrep ci --config=auto # Автоматическое сканирование
+
+      - name: SAST reports upload # Загрузка отчетов
+        uses: actions/upload-artifact@v3 # Использование экшена для загрузки
+        with:
+          name: sast-reports # Имя артефакта
+          path: | # Пути к файлам отчетов
+            bandit_report.json # Отчет Bandit
+            semgrep-results.json # Отчет Semgrep
+
 
   # Динамический анализ безопасности
   dast:
-   needs: sast # Зависимость от успешного завершения SAST
-   runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
-   steps: # Шаги выполнения
-   - name: Repository checkout # Клонирование репозитория
-   uses: actions/checkout@v3 # Использование стандартного экшена
-    
-   - name: ZAP setup # Настройка ZAP
-   uses: zaproxy/zaproxy-github-action@v1 # Использование экшена ZAP
-   with:
-   zapVersion: '2.11.0' # Версия ZAP для использования
-      
-    - name: ZAP daemon start # Запуск демона ZAP
-    run: | # Выполнение команды
-    zap-cli start -d # Запуск в демодном режиме
-    
-    - name: ZAP scanning # Выполнение сканирования
-    run: | # Выполнение команды сканирования
-    zap-cli quick-scan ${{ secrets.EDX_APP_URL }} \
-    -t 15000 \ # Таймаут сканирования
-    -r dast_report.html # Сохранение отчета
-      
-    - name: DAST reports upload # Загрузка отчетов
-    uses: actions/upload-artifact@v3 # Использование экшена для загрузки
-    with:
-    name: dast-reports # Имя артефакта
-    path: dast_report.html # Путь к отчету
+    needs: sast # Зависимость от успешного завершения SAST
+    runs-on: ubuntu-latest # Запуск на последней версии Ubuntu
+    steps: # Шаги выполнения
+      - name: Repository checkout # Клонирование репозитория
+        uses: actions/checkout@v3 # Использование стандартного экшена
+
+      - name: ZAP setup # Настройка ZAP
+        uses: zaproxy/zaproxy-github-action@v1 # Использование экшена ZAP
+        with:
+          zapVersion: '2.11.0' # Версия ZAP для использования
+
+      - name: ZAP daemon start # Запуск демона ZAP
+        run: | # Выполнение команды
+          zap-cli start -d # Запуск в демодном режиме
+
+      - name: ZAP scanning # Выполнение сканирования
+        run: | # Выполнение команды сканирования
+          zap-cli quick-scan ${{ secrets.EDX_APP_URL }} \
+            -t 15000 \ # Таймаут сканирования
+            -r dast_report.html # Сохранение отчета
+
+      - name: DAST reports upload # Загрузка отчетов
+        uses: actions/upload-artifact@v3 # Использование экшена для загрузки
+        with:
+          name: dast-reports # Имя артефакта
+          path: dast_report.html # Путь к отчету
+
