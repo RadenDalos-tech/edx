@@ -2,6 +2,7 @@ name: edX CI/CD Pipeline
 
 # События, при которых запускается пайплайн
 on:
+workflow_dispatch: 
   push: # При пуше в репозиторий
     branches: # Список веток для отслеживания
       - main # Основная ветка
