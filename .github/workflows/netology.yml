@@ -25,14 +25,6 @@ jobs:
         uses: actions/setup-python@v4 # Использование экшена для установки Python
         with:
           python-version: '3.8' # Указание версии Python
-
-     
-      - name: Install problematic dependencies separately
-        run: |
-          pip install git+https://github.com/edx/MongoDBProxy.git@d92bafe9888d2940f647a7b2b2383b29c752f35a
-          pip install git+https://github.com/edx/django-ratelimit-backend.git@v2.0.1a5
-
-
           
       - name: Install project dependencies # Установка зависимостей
         run: | # Выполнение команд
