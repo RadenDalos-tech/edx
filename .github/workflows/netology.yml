@@ -25,6 +25,11 @@ jobs:
         uses: actions/setup-python@v4 # Использование экшена для установки Python
         with:
           python-version: '3.8' # Указание версии Python
+
+      - name: Update pip and setuptools
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install build
           
       - name: Install project dependencies # Установка зависимостей
         run: | # Выполнение команд
