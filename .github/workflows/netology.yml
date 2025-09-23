@@ -26,10 +26,30 @@ jobs:
         with:
           python-version: '3.8' # Указание версии Python
 
+      # Этап 1: Обновление инструментов
       - name: Update pip and setuptools
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install build
+         python -m pip install --upgrade pip setuptools wheel
+         python -m pip install build
+
+# Этап 2: Очистка кэша
+      - name: Clear pip cache
+        run: |
+         pip cache purge
+         rm -rf ~/.cache/pip
+
+# Этап 3: Установка проблемных зависимостей
+      - name: Install problematic dependencies separately
+        run: |
+          pip install git+https://github.com/edx/MongoDBProxy.git@d92bafe9888d2940f647a7b2b2383b29c752f35a
+          pip install git+https://github.com/edx/django-ratelimit-backend.git@v2.0.1a5
+
+# Этап 4: Проверка окружения
+      - name: Set proper permissions and install build tools
+        run: |
+          chmod -R 755 /home/runner/work/edx/edx
+          sudo apt-get update
+          sudo apt-get install -y build-essential
           
       - name: Install project dependencies # Установка зависимостей
         run: | # Выполнение команд
