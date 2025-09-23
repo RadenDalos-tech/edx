@@ -25,6 +25,11 @@ jobs:
         uses: actions/setup-python@v4 # Использование экшена для установки Python
         with:
           python-version: '3.8' # Указание версии Python
+
+      - name: Install Pandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install pandoc
           
       - name: Install project dependencies # Установка зависимостей
         run: | # Выполнение команд
