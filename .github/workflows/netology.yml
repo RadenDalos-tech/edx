@@ -24,11 +24,10 @@ jobs:
       - name: Setup Python environment # Настройка окружения Python
         uses: actions/setup-python@v4 # Использование экшена для установки Python
         with:
-          python-version: '3.10.10' # Указание версии Python
+          python-version: '3.13.5' # Указание версии Python
          
       - name: Install project dependencies # Установка зависимостей
         run: | # Выполнение команд
-          sudo apt-get update
           pip install -r requirements/edx/base.txt # Установка базовых зависимостей
           pip install -r requirements/edx/development.txt # Установка dev зависимостей
           
