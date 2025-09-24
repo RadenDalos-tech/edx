@@ -19,7 +19,8 @@ RUN apt-get update && \
     zlib1g-dev \
     gcc
 
-# Копируем необходимые папки
+# Копируем всю структуру проекта
+COPY openedx/ /app/openedx/
 COPY common/ /app/common/
 COPY requirements/edx/base.txt /app/
 COPY requirements/edx/development.txt /app/
