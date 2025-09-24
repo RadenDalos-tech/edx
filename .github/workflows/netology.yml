@@ -28,7 +28,7 @@ jobs:
          
       - name: Install project dependencies # Установка зависимостей
         run: | # Выполнение команд
-          pip install --upgrade pip
+          sudo apt-get update
           pip install -r requirements/edx/base.txt # Установка базовых зависимостей
           pip install -r requirements/edx/development.txt # Установка dev зависимостей
           
