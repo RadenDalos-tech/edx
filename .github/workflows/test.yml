@@ -13,75 +13,41 @@ on:
 
 jobs:
   build:
-   runs-on: ubuntu-latest
-   steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v2
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Install Docker Compose
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y docker-compose-plugin
-        sudo apt-get install -y docker-compose-v2
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('Dockerfile', 'requirements/**') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
-    - name: Cache Docker layers
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache
-        key: ${{ runner.os }}-buildx-${{ hashFiles('docker-compose.yml', 'requirements/**') }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-
+      - name: Build Docker image
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: edx-platform:latest
+          load: true
 
-    - name: Build MySQL service
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump up --build --no-start mysql
-
-    - name: Build edxapp service
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump up --build --no-start edxapp
-
-    - name: Start MySQL service
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump start mysql
-
-    - name: Wait for MySQL to initialize
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump wait mysql
-
-    - name: Run edX platform setup
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump run edxapp bash -c '
-          source /edx/app/edxapp/edxapp_env && 
-          cd /edx/app/edxapp/edx-platform/ && 
-          paver update_db
-        '
-
-    - name: Install project dependencies
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump run edxapp bash -c '
-          source /edx/app/edxapp/edxapp_env && 
-          cd /edx/app/edxapp/edx-platform/ && 
-          make requirements
-        '
-
-    - name: Setup localization
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump run edxapp bash -c '
-          source /edx/app/edxapp/edxapp_env && 
-          cd /edx/app/edxapp/edx-platform/ && 
-          make l10n
-        '
-
-    - name: Run tests
-      run: |
-        docker-compose -f docker-compose.yml.mysqldbdump run edxapp bash -c '
-          source /edx/app/edxapp/edxapp_env && 
-          cd /edx/app/edxapp/edx-platform/ && 
-          make test
-        '
+      - name: Run Docker container for setup
+        run: |
+          docker run --rm \
+            -v $(pwd):/app \
+            -e PYTHONUNBUFFERED=1 \
+            edx-platform:latest \
+            bash -c '
+              make requirements &&
+              make l10n &&
+              make test
+            '
