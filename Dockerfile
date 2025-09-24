@@ -8,8 +8,8 @@ RUN python -m pip install --upgrade pip
 RUN apt-get update && \
     apt-get install -y \
     build-essential \
-    libmysqlclient-dev \
-    default-libmysqlclient-dev \
+    libmariadb-dev-compat \
+    libmariadb-dev \
     libssl-dev \
     zlib1g-dev \
     gcc
@@ -36,4 +36,3 @@ RUN chmod -R 755 /app
 # Установка окружения edX
 RUN make requirements
 RUN make l10n
-
