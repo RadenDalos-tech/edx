@@ -113,7 +113,7 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-           # Деплой на сервер
+             # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
@@ -132,11 +132,11 @@ jobs:
           echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
           echo "🎯 Target: ${{ secrets.SERVER_IP }}"
           echo "👤 User: ${{ secrets.SERVER_USER }}"
-          echo "🔐 Auth: SSH Key + Passphrase"
+          echo "🔐 Auth: SSH Key with Passphrase"
 
-      - name: Setup SSH with passphrase
+      - name: Setup SSH with passphrase using ssh-agent
         run: |
-          echo "Setting up SSH with key and passphrase..."
+          echo "Setting up SSH with passphrase..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
@@ -146,21 +146,27 @@ jobs:
           
           # Настраиваем known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
           
-          echo "SSH setup completed"
+          # Запускаем ssh-agent и добавляем ключ с passphrase
+          eval "$(ssh-agent -s)"
+          echo "Adding SSH key to agent..."
+          expect << EOF
+          spawn ssh-add ~/.ssh/id_rsa
+          expect "Enter passphrase"
+          send "${{ secrets.SSH_KEY_PASSPHRASE }}\r"
+          expect eof
+          EOF
+          
+          echo "✅ SSH key added to agent"
 
-      - name: Install sshpass for passphrase
+      - name: Test SSH connection
         run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass
-
-      - name: Test SSH connection with passphrase
-        run: |
-          echo "Testing SSH connection with passphrase..."
-          # Используем sshpass для ввода passphrase ключа
-          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e ssh -o BatchMode=no -o ConnectTimeout=10 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || {
+          echo "Testing SSH connection..."
+          ssh -o BatchMode=yes -o ConnectTimeout=10 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || {
             echo "❌ SSH connection failed"
-            echo "💡 Check: Passphrase, key format, server availability"
+            echo "💡 Debug info:"
+            ssh -o BatchMode=yes -v ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo test" || true
             exit 1
           }
 
@@ -176,11 +182,11 @@ jobs:
           # Сохраняем образ
           docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
           
-          # Копируем на сервер используя passphrase
-          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
+          # Копируем на сервер
+          scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
           
-          # Разворачиваем используя passphrase
-          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          # Разворачиваем
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
           echo "=== Starting deployment ==="
           echo "Loading Docker image..."
@@ -200,7 +206,7 @@ jobs:
           echo "Waiting for application..."
           sleep 30
           echo "Verifying deployment..."
-          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
             echo '=== Verification ==='
             docker ps | grep edx-platform && echo '✅ Container running' || echo '❌ Container not found'
             curl -f http://localhost:80/ && echo '✅ Application responding' || echo '❌ Application not responding'
@@ -210,6 +216,10 @@ jobs:
       - name: Store URL for DAST
         run: |
           echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
+
+      - name: Send success notification
+        run: |
+          echo "🎉 Application deployed to http://${{ secrets.SERVER_IP }}"
 
       - name: Send success notification
         run: |
