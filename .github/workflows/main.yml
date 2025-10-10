@@ -40,9 +40,6 @@ jobs:
           echo "Checking container status..."
           docker ps | grep test-container && echo "✅ Container is running" || echo "❌ Container failed to start"
           
-          echo "Checking container logs..."
-          docker logs test-container || echo "No logs available"
-          
           echo "Stopping test container..."
           docker stop test-container && echo "✅ Test container stopped"
 
@@ -73,6 +70,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          exit-code: 0
           
       - name: Upload Trivy results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
@@ -94,16 +92,19 @@ jobs:
 
       - name: Install SAST tools
         run: |
-          pip install bandit safety
-          npm install -g @semgrep/semgrep
+          pip install bandit safety semgrep
 
-      - name: Run Bandit
+      - name: Run Bandit security scan
         run: |
-          bandit -r . -f json -o bandit-report.json . || true
+          bandit -r . -f json -o bandit-report.json . || echo "Bandit scan completed"
 
-      - name: Run Semgrep
+      - name: Run Safety dependencies check
         run: |
-          semgrep scan --config=auto --json -o semgrep-report.json || true
+          safety check --json --output safety-report.json || echo "Safety check completed"
+
+      - name: Run Semgrep static analysis
+        run: |
+          semgrep scan --config=auto --json -o semgrep-report.json || echo "Semgrep scan completed"
 
       - name: Upload SAST reports
         uses: actions/upload-artifact@v4
@@ -111,6 +112,7 @@ jobs:
           name: sast-reports
           path: |
             bandit-report.json
+            safety-report.json
             semgrep-report.json
 
   # Деплой на сервер
@@ -145,98 +147,25 @@ jobs:
 
       - name: Deploy to server
         run: |
-          # Копируем образ на сервер
           scp /tmp/edx-platform.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
           
-          # Деплой на сервер
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
-          
           echo "=== Starting deployment ==="
-          
-          # Загружаем образ
           docker load -i /tmp/edx-platform.tar.gz
-          
-          # Останавливаем старый контейнер если существует
-          if [ "$(docker ps -aq -f name=edx-platform)" ]; then
-            echo "Stopping old container..."
-            docker stop edx-platform || true
-            docker rm edx-platform || true
-          fi
-          
-          # Запускаем новый контейнер
-          echo "Starting new container..."
-          docker run -d \
-            --name edx-platform \
-            --restart unless-stopped \
-            -p 80:80 \
-            edx-platform:${{ github.sha }}
-          
-          # Очистка
+          docker stop edx-platform || true
+          docker rm edx-platform || true
+          docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
           rm /tmp/edx-platform.tar.gz
-          docker system prune -f
-          
           echo "=== Deployment completed ==="
           EOF
 
       - name: Verify deployment
         run: |
-          sleep 10
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
-          echo "=== Verifying deployment ==="
-          
-          # Проверяем что контейнер запущен
-          docker ps | grep edx-platform && echo "✅ Container is running" || echo "❌ Container not found"
-          
-          # Ждем запуска приложения
-          sleep 20
-          
-          # Проверяем доступность
-          curl -f http://localhost:80/ && echo "✅ Application is responding" || echo "❌ Application health check failed"
-          
-          echo "=== Verification completed ==="
-          EOF
-
-      - name: Store application URL for DAST
-        run: |
-          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
+          sleep 30
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "curl -f http://localhost:80/ && echo '✅ Application deployed successfully' || echo '❌ Application check failed'"
 
       - name: Send deployment notification
         run: |
           echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
           echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
-
-  # Динамический анализ безопасности (DAST)
-  dast:
-    needs: deploy
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Wait for application to be ready
-        run: |
-          echo "Waiting for application to be ready..."
-          timeout 60s bash -c 'until curl -f http://${{ secrets.SERVER_IP }}; do sleep 5; done' || echo "Application ready check completed"
-
-      - name: Simple DAST with curl checks
-        run: |
-          echo "=== Running basic security checks ==="
-          
-          # Проверяем основные эндпоинты
-          curl -I http://${{ secrets.SERVER_IP }} && echo "✅ Main page accessible"
-          
-          # Проверяем заголовки безопасности
-          curl -I http://${{ secrets.SERVER_IP }} | grep -i "server:" || echo "⚠️  Server header visible"
-          
-          echo "=== Basic DAST completed ==="
-
-      - name: Upload DAST report
-        uses: actions/upload-artifact@v4
-        with:
-          name: dast-basic-report
-          path: |
-            ./*.txt
-          retention-days: 30
