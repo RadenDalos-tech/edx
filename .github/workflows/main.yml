@@ -113,7 +113,7 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-        # Деплой на сервер
+          # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
@@ -131,44 +131,47 @@ jobs:
           echo "🚀 Starting deployment..."
           echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
           echo "🎯 Target: ${{ secrets.SERVER_IP }}"
+          echo "🔐 Authentication: Password"
 
-      - name: Setup SSH properly
+      - name: Install sshpass for password authentication
         run: |
-          echo "Setting up SSH connection..."
+          echo "Installing sshpass..."
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Setup SSH known hosts
+        run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          
-          # Правильно записываем приватный ключ
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          
-          # Добавляем сервер в known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
-          
-          echo "SSH setup completed"
 
-      - name: Test SSH connection
+      - name: Test SSH connection with password
         run: |
-          echo "Testing SSH connection to server..."
-          ssh -o BatchMode=yes -o ConnectTimeout=5 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || echo "❌ SSH connection failed"
+          echo "Testing SSH connection with password..."
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh -o BatchMode=no -o ConnectTimeout=10 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || {
+            echo "❌ SSH connection failed"
+            echo "💡 Check: Password, username, server availability"
+            exit 1
+          }
 
       - name: Build application image
         run: |
           echo "Building Docker image..."
           docker build -t edx-platform:${{ github.sha }} .
 
-      - name: Deploy to server
+      - name: Deploy to server with password
         run: |
           echo "Deploying to ${{ secrets.SERVER_IP }}..."
           
           # Сохраняем образ в файл
           docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
           
-          # Копируем на сервер и разворачиваем
-          scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
+          # Копируем на сервер используя пароль
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
           
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          # Разворачиваем на сервере используя пароль
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
           echo "=== Starting deployment on server ==="
           
@@ -198,7 +201,7 @@ jobs:
           sleep 30
           echo "Verifying deployment..."
           
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
           echo "=== Deployment Verification ==="
           echo "Container status:"
@@ -217,3 +220,5 @@ jobs:
         run: |
           echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
           echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🚀 Deployed from branch: ${GITHUB_REF#refs/heads/}"
