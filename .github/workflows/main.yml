@@ -117,7 +117,6 @@ jobs:
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
-    # Упрощаем условие - деплой при любом пуше в main или develop
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     
     steps:
@@ -190,9 +189,152 @@ jobs:
           echo "=== Verification completed ==="
           EOF
 
+      - name: Store application URL for DAST
+        run: |
+          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
+          echo "DAST target set to: http://${{ secrets.SERVER_IP }}"
+
       - name: Send deployment notification
         run: |
           echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
           echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
           echo "📝 Commit: ${{ github.sha }}"
           echo "🚀 Deployed from branch: ${GITHUB_REF#refs/heads/}"
+
+  # Динамический анализ безопасности (DAST)
+  dast:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'  # DAST только для production
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for application to be ready
+        run: |
+          echo "Waiting for application to be fully ready..."
+          timeout 120s bash -c '
+            until curl -f -s http://${{ secrets.SERVER_IP }}/ > /dev/null; do
+              echo "Waiting for application...";
+              sleep 10;
+            done
+          ' && echo "✅ Application is ready for DAST scanning" || echo "⚠️ Application readiness check timeout"
+
+      - name: Install DAST tools
+        run: |
+          echo "Installing DAST security tools..."
+          # Устанавливаем Nuclei для сканирования уязвимостей
+          curl -sL https://raw.githubusercontent.com/projectdiscovery/nuclei/master/install.sh | sh
+          # Устанавливаем Nikto для сканирования web сервера
+          sudo apt-get update && sudo apt-get install -y nikto
+          # Устанавливаем OWASP ZAP
+          wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0_Linux.tar.gz
+          tar -xzf ZAP_2.14.0_Linux.tar.gz
+          sudo mv ZAP_2.14.0 /opt/zap
+
+      - name: Run Nuclei vulnerability scan
+        run: |
+          echo "🔍 Running Nuclei vulnerability scan..."
+          ./bin/nuclei -u http://${{ secrets.SERVER_IP }} \
+            -severity critical,high,medium \
+            -rate-limit 10 \
+            -timeout 30 \
+            -o nuclei-results.json \
+            -json || echo "Nuclei scan completed"
+
+      - name: Run Nikto web server scan
+        run: |
+          echo "🔍 Running Nikto web server scan..."
+          nikto -h http://${{ secrets.SERVER_IP }} \
+            -o nikto-results.txt \
+            -Format txt || echo "Nikto scan completed"
+
+      - name: Run basic security headers check
+        run: |
+          echo "🔍 Checking security headers..."
+          curl -I http://${{ secrets.SERVER_IP }} > security-headers.txt
+          echo "=== Security Headers Analysis ===" >> security-headers.txt
+          echo "" >> security-headers.txt
+          
+          # Проверяем основные security headers
+          if grep -q "X-Frame-Options" security-headers.txt; then
+            echo "✅ X-Frame-Options: Present" >> security-headers.txt
+          else
+            echo "❌ X-Frame-Options: Missing" >> security-headers.txt
+          fi
+          
+          if grep -q "X-Content-Type-Options" security-headers.txt; then
+            echo "✅ X-Content-Type-Options: Present" >> security-headers.txt
+          else
+            echo "❌ X-Content-Type-Options: Missing" >> security-headers.txt
+          fi
+          
+          if grep -q "Content-Security-Policy" security-headers.txt; then
+            echo "✅ Content-Security-Policy: Present" >> security-headers.txt
+          else
+            echo "❌ Content-Security-Policy: Missing" >> security-headers.txt
+          fi
+
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          echo "🔍 Running OWASP ZAP baseline scan..."
+          /opt/zap/zap.sh -cmd \
+            -quickurl http://${{ secrets.SERVER_IP }} \
+            -quickout zap-results.html \
+            -quickprogress || echo "ZAP scan completed"
+
+      - name: Generate DAST summary report
+        run: |
+          echo "📊 DAST Scan Summary Report" > dast-summary.md
+          echo "=============================" >> dast-summary.md
+          echo "" >> dast-summary.md
+          echo "**Scan Date:** $(date)" >> dast-summary.md
+          echo "**Target:** http://${{ secrets.SERVER_IP }}" >> dast-summary.md
+          echo "**Scan Tools:** Nuclei, Nikto, OWASP ZAP" >> dast-summary.md
+          echo "" >> dast-summary.md
+          
+          # Nuclei results summary
+          if [ -f "nuclei-results.json" ]; then
+            NUCLEI_COUNT=$(jq '. | length' nuclei-results.json 2>/dev/null || echo "0")
+            echo "**Nuclei Findings:** $NUCLEI_COUNT vulnerabilities detected" >> dast-summary.md
+          else
+            echo "**Nuclei Findings:** No results available" >> dast-summary.md
+          fi
+          
+          # Nikto results summary
+          if [ -f "nikto-results.txt" ]; then
+            NIKTO_ISSUES=$(grep -c "+" nikto-results.txt 2>/dev/null || echo "0")
+            echo "**Nikto Findings:** $NIKTO_ISSUES issues detected" >> dast-summary.md
+          else
+            echo "**Nikto Findings:** No results available" >> dast-summary.md
+          fi
+          
+          echo "" >> dast-summary.md
+          echo "## Security Headers Status" >> dast-summary.md
+          cat security-headers.txt >> dast-summary.md
+
+      - name: Upload DAST reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: |
+            nuclei-results.json
+            nikto-results.txt
+            security-headers.txt
+            zap-results.html
+            dast-summary.md
+          retention-days: 30
+
+      - name: DAST completion summary
+        run: |
+          echo "🎯 DAST Security Testing Completed"
+          echo "=================================="
+          echo "📊 Scan Results Summary:"
+          echo "  • Nuclei: Vulnerability scanning"
+          echo "  • Nikto: Web server security"
+          echo "  • OWASP ZAP: Application security"
+          echo "  • Security Headers: HTTP headers analysis"
+          echo ""
+          echo "📁 Detailed reports available as artifact: dast-reports"
+          echo "🔍 Download from Actions to review security findings"
