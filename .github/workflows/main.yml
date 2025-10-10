@@ -1,141 +1,96 @@
-name: edX CI/CD Pipeline
+name: DevSecOps CI/CD Pipeline
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - develop
 
 jobs:
-  # Сборка и тестирование
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+          poetry config virtualenvs.in-project true
+          poetry install
+
+      - name: Run tests
+        run: |
+          poetry run pytest
 
       - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: edx-platform:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Run basic tests
         run: |
-          echo "Running basic container tests..."
-          docker run --rm edx-platform:latest python -c "import django; print('Django version:', django.get_version())" || echo "Django check completed"
-          docker run --rm edx-platform:latest which nginx && echo "Nginx installed" || echo "Nginx check"
+          docker build -t devsecops-app:latest .
 
-  # Сканирование безопасности
-  security-scan:
-    needs: build-and-test
+  security:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Build image for scanning
-        run: docker build -t edx-platform:scan .
+      - name: Run SAST scan
+        uses: github/codeql-action/analyze@v2
 
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: edx-platform:scan
-          format: sarif
-          output: trivy-results.sarif
+          image-ref: devsecops-app:latest
+          format: json
+          output: trivy-report.json
           severity: CRITICAL,HIGH
 
-      - name: Upload Trivy results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
-
-  # Деплой на сервер
   deploy:
-    needs: [build-and-test, security-scan]
+    needs: [build, security]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-    
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and deploy application
-        run: |
-          # Собираем образ
-          docker build -t edx-platform:${{ github.sha }} .
-          
-          # Сохраняем образ в tar
-          docker save edx-platform:${{ github.sha }} | gzip > edx-platform.tar.gz
-          
-          # Копируем на сервер
-          scp edx-platform.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
-          
-          # Деплой на сервер
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
-          set -e
-          
-          echo "=== Starting deployment ==="
-          
-          # Загружаем образ
-          docker load -i /tmp/edx-platform.tar.gz
-          
-          # Останавливаем старый контейнер если существует
-          if [ "$(docker ps -aq -f name=edx-platform)" ]; then
-            echo "Stopping old container..."
-            docker stop edx-platform
-            docker rm edx-platform
-          fi
-          
-          # Запускаем новый контейнер
-          echo "Starting new container..."
-          docker run -d \
-            --name edx-platform \
-            --restart unless-stopped \
-            -p 80:80 \
-            -e DJANGO_SETTINGS_MODULE="lms.envs.production" \
-            edx-platform:${{ github.sha }}
-          
-          # Очистка
-          rm /tmp/edx-platform.tar.gz
-          docker system prune -f
-          
-          echo "=== Deployment completed ==="
-          EOF
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      - name: Verify deployment
-        run: |
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
-          echo "=== Verifying deployment ==="
-          
-          # Проверяем что контейнер запущен
-          docker ps | grep edx-platform
-          
-          # Ждем запуска приложения
-          sleep 30
-          
-          # Проверяем доступность
-          curl -f http://localhost:80/ || echo "Application health check failed"
-          
-          echo "=== Verification completed ==="
-          EOF
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Send deployment notification
-        run: |
-          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
-          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
+      - name: Deploy to Kubernetes
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.K8S_HOST }}
+          username: ${{ secrets.K8S_USER }}
+          key: ${{ secrets.K8S_KEY }}
+          script: |
+            kubectl set image deployment/devsecops-app devsecops-app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tags }}
