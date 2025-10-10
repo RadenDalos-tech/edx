@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     nginx \
-    supervisor \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /edx/app
@@ -41,13 +42,12 @@ RUN pip install -r requirements/edx/development.txt
 RUN make requirements || echo "Make requirements completed with warnings"
 RUN make l10n || echo "Make l10n completed with warnings"
 
-# Настройка nginx и supervisor
+# Настройка nginx
 COPY docker/nginx.conf /etc/nginx/sites-available/edx
-COPY docker/supervisor.conf /etc/supervisor/conf.d/edx.conf
-
 RUN ln -s /etc/nginx/sites-available/edx /etc/nginx/sites-enabled/edx
 RUN rm /etc/nginx/sites-enabled/default
 
 EXPOSE 80
 
-CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
+# Запуск приложения через скрипт
+CMD sh -c '/edx/venv/bin/python /edx/app/manage.py runserver 0.0.0.0:8000 & nginx -g "daemon off;"'
