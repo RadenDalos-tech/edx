@@ -17,11 +17,13 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     curl \
     git \
+    nginx \
+    supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /edx/app
 
-# Копируем ВЕСЬ код сначала
+# Копируем ВЕСЬ код сначала (для корректной работы editable dependencies)
 COPY . .
 
 # Создание виртуального окружения
@@ -31,7 +33,7 @@ ENV PATH="/edx/venv/bin:$PATH"
 # Установка совместимой версии pip для старых пакетов
 RUN pip install --upgrade "pip<24.1" setuptools wheel
 
-# Установка зависимостей (теперь editable dependencies будут работать)
+# Установка зависимостей edX
 RUN pip install -r requirements/edx/base.txt
 RUN pip install -r requirements/edx/development.txt
 
@@ -39,6 +41,13 @@ RUN pip install -r requirements/edx/development.txt
 RUN make requirements || echo "Make requirements completed with warnings"
 RUN make l10n || echo "Make l10n completed with warnings"
 
-EXPOSE 8000
+# Настройка nginx и supervisor
+COPY docker/nginx.conf /etc/nginx/sites-available/edx
+COPY docker/supervisor.conf /etc/supervisor/conf.d/edx.conf
 
-CMD ["python3", "manage.py", "runserver", "0.0.0.0:8000"]
+RUN ln -s /etc/nginx/sites-available/edx /etc/nginx/sites-enabled/edx
+RUN rm /etc/nginx/sites-enabled/default
+
+EXPOSE 80
+
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
