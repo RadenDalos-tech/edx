@@ -43,7 +43,7 @@ jobs:
           echo "Stopping test container..."
           docker stop test-container && echo "✅ Test container stopped"
 
-        # Сканирование безопасности контейнера
+          # Сканирование безопасности контейнера (минимальный)
   sca:
     needs: build
     runs-on: ubuntu-latest
@@ -51,73 +51,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        
-      - name: Build image for scanning
+      - name: Build and scan
         run: |
-          echo "Building Docker image for security scanning..."
+          # Собираем образ
           docker build -t edx-platform:scan .
-        
-      - name: Install Trivy
-        run: |
-          echo "Installing Trivy vulnerability scanner..."
-          wget -q https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_Linux-64bit.deb
-          sudo dpkg -i trivy_0.65.0_Linux-64bit.deb
-          trivy --version
-
-      - name: Run Trivy vulnerability scan
-        run: |
-          echo "Running Trivy security scan..."
-          echo "This may take a few minutes while Trivy downloads vulnerability database..."
-          trivy image \
-            --format table \
-            --severity CRITICAL,HIGH \
-            --exit-code 0 \
-            edx-platform:scan || echo "Trivy scan completed"
           
-          # Дополнительно сохраняем SARIF отчет
-          trivy image \
-            --format sarif \
-            --output trivy-results.sarif \
-            --severity CRITICAL,HIGH \
-            --exit-code 0 \
-            edx-platform:scan || echo "SARIF report generated"
+          # Устанавливаем Trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
           
-          echo "✅ Trivy scan completed successfully"
+          # Запускаем сканирование
+          echo "🔒 Running security scan..."
+          trivy image --severity CRITICAL,HIGH --exit-code 0 edx-platform:scan
+          echo "✅ Security scan completed"
 
-      - name: Display scan results
+      - name: Upload simple report
         run: |
-          echo "=== Trivy Scan Summary ==="
-          if [ -f "trivy-results.sarif" ]; then
-            echo "✅ SARIF report created: trivy-results.sarif"
-            # Показываем краткую статистику
-            echo "📊 Vulnerabilities found:"
-            jq '.runs[0].results | length' trivy-results.sarif || echo "No vulnerabilities found or jq not available"
-          else
-            echo "❌ SARIF report was not created"
-          fi
+          echo "Security scan finished at: $(date)" > security-scan.txt
+          echo "Image: edx-platform:scan" >> security-scan.txt
+          echo "Status: Completed" >> security-scan.txt
 
-      - name: Upload Trivy report as artifact
+      - name: Upload scan summary
         uses: actions/upload-artifact@v4
         with:
-          name: sca-trivy-report
-          path: |
-            trivy-results.sarif
-          retention-days: 30
-
-      - name: Upload Trivy results to GitHub Security tab (only for main repo)
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-
-      - name: Show scan summary
-        run: |
-          echo "🔒 SCA Security Scan Completed"
-          echo "📊 Trivy results saved as artifact: sca-trivy-report"
-          echo "📁 Download report from Actions artifacts"
-          echo "💡 Note: GitHub Security tab integration works only in main repository"
+          name: sca-summary
+          path: security-scan.txt
 
   # Статический анализ кода
   sast:
