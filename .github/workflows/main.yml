@@ -113,11 +113,12 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-  # Деплой на сервер
+    # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    # Упрощаем условие - деплой при любом пуше в main или develop
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     
     steps:
       - name: Checkout repository
@@ -145,24 +146,56 @@ jobs:
 
       - name: Deploy to server
         run: |
+          echo "Starting deployment to ${{ secrets.SERVER_IP }}..."
           scp /tmp/edx-platform.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
           
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
           echo "=== Starting deployment ==="
+          
+          # Загружаем образ
+          echo "Loading Docker image..."
           docker load -i /tmp/edx-platform.tar.gz
+          
+          # Останавливаем старый контейнер если существует
+          echo "Stopping old container..."
           docker stop edx-platform || true
           docker rm edx-platform || true
-          docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
+          
+          # Запускаем новый контейнер
+          echo "Starting new container..."
+          docker run -d \
+            --name edx-platform \
+            --restart unless-stopped \
+            -p 80:80 \
+            edx-platform:${{ github.sha }}
+          
+          # Очистка
           rm /tmp/edx-platform.tar.gz
           echo "=== Deployment completed ==="
           EOF
 
       - name: Verify deployment
         run: |
+          echo "Waiting for application to start..."
           sleep 30
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "curl -f http://localhost:80/ && echo '✅ Application deployed successfully' || echo '❌ Application check failed'"
+          echo "Verifying deployment..."
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          set -e
+          echo "=== Verification ==="
+          echo "Container status:"
+          docker ps | grep edx-platform && echo "✅ Container is running" || echo "❌ Container not found"
+          echo "Application health check:"
+          curl -f http://localhost:80/ && echo "✅ Application is responding" || echo "❌ Application health check failed"
+          echo "=== Verification completed ==="
+          EOF
 
+      - name: Send deployment notification
+        run: |
+          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
+          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🚀 Deployed from branch: ${GITHUB_REF#refs/heads/}"
       - name: Send deployment notification
         run: |
           echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
