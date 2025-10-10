@@ -114,125 +114,125 @@ jobs:
             semgrep-report.json
 
   # Деплой на сервер
-deploy:
-  needs: [build, sca, sast]
-  runs-on: ubuntu-latest
-  if: |
-    (github.ref == 'refs/heads/main' || 
-     github.ref == 'refs/heads/develop' || 
-     github.event_name == 'workflow_dispatch')
-  
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+  deploy:
+    needs: [build, sca, sast]
+    runs-on: ubuntu-latest
+    if: |
+      (github.ref == 'refs/heads/main' || 
+       github.ref == 'refs/heads/develop' || 
+       github.event_name == 'workflow_dispatch')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Show deployment info
-      run: |
-        echo "🚀 Starting deployment..."
-        echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
-        echo "🎯 Target: ${{ secrets.SERVER_IP }}"
-        echo "👤 User: root"
-        echo "🔐 Auth: SSH Key with Passphrase"
+      - name: Show deployment info
+        run: |
+          echo "🚀 Starting deployment..."
+          echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
+          echo "🎯 Target: ${{ secrets.SERVER_IP }}"
+          echo "👤 User: root"
+          echo "🔐 Auth: SSH Key with Passphrase"
 
-    - name: Setup SSH with expect
-      run: |
-        echo "Setting up SSH with expect..."
-        
-        # Устанавливаем expect
-        sudo apt-get update
-        sudo apt-get install -y expect
-        
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
-        
-        # Записываем приватный ключ
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        
-        echo "=== SSH Key Debug ==="
-        echo "Key file:" && ls -la ~/.ssh/id_rsa
-        echo "First line:" && head -1 ~/.ssh/id_rsa
-        echo "=== End Debug ==="
-        
-        # Настраиваем known_hosts
-        ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-        chmod 644 ~/.ssh/known_hosts
-        
-        # Создаем expect скрипт для SSH
-        cat > ~/ssh-with-passphrase.exp << 'EOF'
-        #!/usr/bin/expect -f
-        set timeout 30
-        set host [lindex $argv 0]
-        set command [lindex $argv 1]
-        spawn ssh -o StrictHostKeyChecking=yes $host $command
-        expect {
-          "Enter passphrase for key*" {
-            send "$env(SSH_PASSPHRASE)\r"
-            exp_continue
+      - name: Setup SSH with expect
+        run: |
+          echo "Setting up SSH with expect..."
+          
+          # Устанавливаем expect
+          sudo apt-get update
+          sudo apt-get install -y expect
+          
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Записываем приватный ключ
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          echo "=== SSH Key Debug ==="
+          echo "Key file:" && ls -la ~/.ssh/id_rsa
+          echo "First line:" && head -1 ~/.ssh/id_rsa
+          echo "=== End Debug ==="
+          
+          # Настраиваем known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          
+          # Создаем expect скрипт для SSH
+          cat > ~/ssh-with-passphrase.exp << 'EOF'
+          #!/usr/bin/expect -f
+          set timeout 30
+          set host [lindex $argv 0]
+          set command [lindex $argv 1]
+          spawn ssh -o StrictHostKeyChecking=yes $host $command
+          expect {
+            "Enter passphrase for key*" {
+              send "$env(SSH_PASSPHRASE)\r"
+              exp_continue
+            }
+            "password:" {
+              send "$env(SSH_PASSPHRASE)\r"
+              exp_continue
+            }
+            eof
           }
-          "password:" {
-            send "$env(SSH_PASSPHRASE)\r"
-            exp_continue
+          catch wait result
+          exit [lindex $result 3]
+          EOF
+          
+          chmod +x ~/ssh-with-passphrase.exp
+
+      - name: Test SSH connection with expect
+        run: |
+          echo "Testing SSH connection..."
+          SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "echo '✅ SSH connection successful'" || {
+            echo "❌ SSH connection failed"
+            exit 1
           }
-          eof
-        }
-        catch wait result
-        exit [lindex $result 3]
-        EOF
-        
-        chmod +x ~/ssh-with-passphrase.exp
 
-    - name: Test SSH connection with expect
-      run: |
-        echo "Testing SSH connection..."
-        SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "echo '✅ SSH connection successful'" || {
-          echo "❌ SSH connection failed"
-          exit 1
-        }
+      - name: Build application image
+        run: |
+          echo "Building Docker image..."
+          docker build -t edx-platform:${{ github.sha }} .
 
-    - name: Build application image
-      run: |
-        echo "Building Docker image..."
-        docker build -t edx-platform:${{ github.sha }} .
-
-    - name: Deploy to server with expect
-      run: |
-        echo "Deploying to server..."
-        
-        # Сохраняем образ
-        docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
-        
-        # Создаем expect скрипт для SCP
-        cat > ~/scp-with-passphrase.exp << 'EOF'
-        #!/usr/bin/expect -f
-        set timeout 60
-        set source [lindex $argv 0]
-        set destination [lindex $argv 1]
-        spawn scp $source $destination
-        expect {
-          "Enter passphrase for key*" {
-            send "$env(SSH_PASSPHRASE)\r"
-            exp_continue
+      - name: Deploy to server with expect
+        run: |
+          echo "Deploying to server..."
+          
+          # Сохраняем образ
+          docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
+          
+          # Создаем expect скрипт для SCP
+          cat > ~/scp-with-passphrase.exp << 'EOF'
+          #!/usr/bin/expect -f
+          set timeout 60
+          set source [lindex $argv 0]
+          set destination [lindex $argv 1]
+          spawn scp $source $destination
+          expect {
+            "Enter passphrase for key*" {
+              send "$env(SSH_PASSPHRASE)\r"
+              exp_continue
+            }
+            eof
           }
-          eof
-        }
-        catch wait result
-        exit [lindex $result 3]
-        EOF
-        
-        chmod +x ~/scp-with-passphrase.exp
-        
-        # Копируем на сервер
-        SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/scp-with-passphrase.exp "/tmp/edx-image.tar" "root@${{ secrets.SERVER_IP }}:/tmp/"
-        
-        # Разворачиваем на сервере
-        SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "
-          set -e
-          echo '=== Starting deployment ==='
-          docker load -i /tmp/edx-image.tar
-          docker stop edx-platform || true
-          docker rm edx-platform || true
-          docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
-          rm /tmp/edx-image.tar
-          echo '✅ Deployment completed'
-        "
+          catch wait result
+          exit [lindex $result 3]
+          EOF
+          
+          chmod +x ~/scp-with-passphrase.exp
+          
+          # Копируем на сервер
+          SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/scp-with-passphrase.exp "/tmp/edx-image.tar" "root@${{ secrets.SERVER_IP }}:/tmp/"
+          
+          # Разворачиваем на сервере
+          SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "
+            set -e
+            echo '=== Starting deployment ==='
+            docker load -i /tmp/edx-image.tar
+            docker stop edx-platform || true
+            docker rm edx-platform || true
+            docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
+            rm /tmp/edx-image.tar
+            echo '✅ Deployment completed'
+          "
