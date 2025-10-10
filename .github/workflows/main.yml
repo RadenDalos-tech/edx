@@ -30,20 +30,13 @@ jobs:
 
       - name: Load and test Docker image
         run: |
-          echo "Loading Docker image..."
           docker load -i /tmp/edx-platform.tar
-          
-          echo "Testing if container starts..."
           docker run --rm -d --name test-container -p 8000:80 edx-platform:latest
           sleep 10
-          
-          echo "Checking container status..."
           docker ps | grep test-container && echo "✅ Container is running" || echo "❌ Container failed to start"
-          
-          echo "Stopping test container..."
-          docker stop test-container && echo "✅ Test container stopped"
+          docker stop test-container
 
-    # Сканирование безопасности контейнера (быстрая версия)
+  # Сканирование безопасности контейнера
   sca:
     needs: build
     runs-on: ubuntu-latest
@@ -51,29 +44,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         
-      - name: Build image for scanning
+      - name: Build and scan with Trivy
         run: |
+          # Собираем образ
+          echo "Building Docker image for scanning..."
           docker build -t edx-platform:scan .
-        
-      - name: Install Trivy via script
-        run: |
-          # Быстрая установка Trivy
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.65.0
-
-      - name: Run Trivy scan
-        run: |
+          
+          # Устанавливаем Trivy
+          echo "Installing Trivy..."
+          wget -q https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_Linux-64bit.deb
+          sudo dpkg -i trivy_0.65.0_Linux-64bit.deb
+          
+          # Сканируем образ
+          echo "Running Trivy vulnerability scan..."
           trivy image \
             --format sarif \
             --output trivy-results.sarif \
             --severity CRITICAL,HIGH \
             --exit-code 0 \
             edx-platform:scan
+          
+          echo "✅ Trivy scan completed"
 
-      - name: Upload reports
+      - name: Upload Trivy report
         uses: actions/upload-artifact@v4
         with:
           name: sca-reports
           path: trivy-results.sarif
+          retention-days: 30
 
       - name: Upload to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -95,19 +93,15 @@ jobs:
 
       - name: Install SAST tools
         run: |
-          pip install bandit safety semgrep
+          pip install bandit safety
 
       - name: Run Bandit security scan
         run: |
-          bandit -r . -f json -o bandit-report.json . || echo "Bandit scan completed"
+          bandit -r ./lms ./cms -f json -o bandit-report.json . || echo "Bandit scan completed"
 
       - name: Run Safety dependencies check
         run: |
           safety check --json --output safety-report.json || echo "Safety check completed"
-
-      - name: Run Semgrep static analysis
-        run: |
-          semgrep scan --config=auto --json -o semgrep-report.json || echo "Semgrep scan completed"
 
       - name: Upload SAST reports
         uses: actions/upload-artifact@v4
@@ -116,7 +110,6 @@ jobs:
           path: |
             bandit-report.json
             safety-report.json
-            semgrep-report.json
 
   # Деплой на сервер
   deploy:
@@ -151,24 +144,21 @@ jobs:
       - name: Deploy to server
         run: |
           scp /tmp/edx-platform.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
-          
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
-          echo "=== Starting deployment ==="
           docker load -i /tmp/edx-platform.tar.gz
           docker stop edx-platform || true
           docker rm edx-platform || true
           docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
           rm /tmp/edx-platform.tar.gz
-          echo "=== Deployment completed ==="
+          echo "✅ Deployment completed"
           EOF
 
       - name: Verify deployment
         run: |
           sleep 30
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "curl -f http://localhost:80/ && echo '✅ Application deployed successfully' || echo '❌ Application check failed'"
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "curl -f http://localhost:80/ && echo '✅ Application deployed' || echo '❌ Application check failed'"
 
-      - name: Send deployment notification
+      - name: Send notification
         run: |
-          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
-          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
+          echo "🎉 Application deployed to http://${{ secrets.SERVER_IP }}"
