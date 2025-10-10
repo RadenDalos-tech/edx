@@ -132,58 +132,30 @@ jobs:
           echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
           echo "🎯 Target: ${{ secrets.SERVER_IP }}"
           echo "👤 User: ${{ secrets.SERVER_USER }}"
-          echo "🔐 Auth: SSH Key with Passphrase"
+          echo "🔐 Auth: SSH Key without Passphrase"
 
-      - name: Setup SSH with passphrase using ssh-agent
+      - name: Setup SSH without passphrase
         run: |
-          echo "Setting up SSH with passphrase..."
-          
-          # Устанавливаем expect
-          echo "Installing expect..."
-          sudo apt-get update
-          sudo apt-get install -y expect
-          
+          echo "Setting up SSH..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          
-          # Создаем скрипт для автоматизации ввода passphrase
-          cat > ~/ssh-add-with-passphrase.exp << 'EOF'
-          #!/usr/bin/expect -f
-          set timeout 10
-          spawn ssh-add $env(HOME)/.ssh/id_rsa
-          expect "Enter passphrase"
-          send "$env(SSH_PASSPHRASE)\r"
-          expect eof
-          EOF
-          
-          chmod +x ~/ssh-add-with-passphrase.exp
           
           # Записываем приватный ключ
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           
-          # Проверяем что файл создан
-          echo "=== SSH Key Debug ==="
+          # Проверяем ключ
+          echo "=== SSH Key Verification ==="
           echo "Key file exists:" && ls -la ~/.ssh/id_rsa
-          echo "File size:" && wc -c ~/.ssh/id_rsa
-          echo "First line:" && head -1 ~/.ssh/id_rsa
-          echo "Last line:" && tail -1 ~/.ssh/id_rsa
-          echo "=== End Debug ==="
+          echo "Key format:" && head -1 ~/.ssh/id_rsa
+          echo "Key fingerprint:" && ssh-keygen -lf ~/.ssh/id_rsa
+          echo "=== End Verification ==="
           
           # Настраиваем known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           
-          # Запускаем ssh-agent
-          eval "$(ssh-agent -s)"
-          
-          # Добавляем ключ с использованием expect скрипта
-          echo "Adding SSH key to agent..."
-          SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-add-with-passphrase.exp
-          
-          echo "✅ SSH key added to agent"
-          echo "SSH keys in agent:"
-          ssh-add -l
+          echo "✅ SSH setup completed"
 
       - name: Test SSH connection
         run: |
@@ -273,10 +245,8 @@ jobs:
           echo "   📦 Image: edx-platform:${{ github.sha }}"
           echo "   🕒 Deployment time: $(date)"
           
-      - name: Cleanup SSH agent
+      - name: Cleanup SSH
         if: always()
         run: |
-          echo "Cleaning up SSH agent..."
-          eval "$(ssh-agent -k)" || true
+          echo "Cleaning up SSH files..."
           rm -f ~/.ssh/id_rsa
-          rm -f ~/ssh-add-with-passphrase.exp
