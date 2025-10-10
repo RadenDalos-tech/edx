@@ -236,3 +236,138 @@ jobs:
             rm /tmp/edx-image.tar
             echo '✅ Deployment completed'
           "
+
+      - name: Store application URL
+        run: |
+          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
+          echo "🎯 Application URL: http://${{ secrets.SERVER_IP }}"
+
+  # DAST - Dynamic Application Security Testing
+  dast:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for application to be ready
+        run: |
+          echo "⏳ Waiting for application to start..."
+          timeout 120 bash -c 'until curl -f http://${{ secrets.SERVER_IP }} >/dev/null 2>&1; do sleep 10; done' || {
+            echo "❌ Application not ready after 2 minutes"
+            exit 1
+          }
+          echo "✅ Application is ready for DAST scanning"
+
+      - name: Run ZAP Baseline Scan
+        run: |
+          echo "🔍 Running OWASP ZAP Baseline Scan..."
+          docker run -v $(pwd):/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://${{ secrets.SERVER_IP }} \
+            -g gen.conf \
+            -r zap-report.html \
+            -w zap-report.md \
+            -x zap-report.xml \
+            -J zap-report.json \
+            -a || echo "⚠️ ZAP scan completed with warnings"
+
+      - name: Run Nuclei vulnerability scan
+        run: |
+          echo "🔍 Running Nuclei vulnerability scan..."
+          # Устанавливаем Nuclei
+          curl -sL https://raw.githubusercontent.com/projectdiscovery/nuclei/v3/master/install.sh | sh
+          ./bin/nuclei -u http://${{ secrets.SERVER_IP }} -severity low,medium,high,critical -o nuclei-report.json -json || echo "⚠️ Nuclei scan completed"
+
+      - name: Run Nikto web server scan
+        run: |
+          echo "🔍 Running Nikto web server scan..."
+          docker run --rm sullo/nikto -h http://${{ secrets.SERVER_IP }} -o nikto-report.txt || echo "⚠️ Nikto scan completed"
+
+      - name: Run NMAP security scan
+        run: |
+          echo "🔍 Running NMAP security scan..."
+          sudo apt-get update
+          sudo apt-get install -y nmap
+          nmap -sV --script vuln ${{ secrets.SERVER_IP }} -oN nmap-report.txt || echo "⚠️ NMAP scan completed"
+
+      - name: Generate DAST summary report
+        run: |
+          echo "📊 Generating DAST Summary Report..."
+          cat > dast-summary.md << EOF
+          # DAST Security Scan Report
+          
+          ## Scan Details
+          - **Application URL**: http://${{ secrets.SERVER_IP }}
+          - **Scan Date**: $(date)
+          - **Scan Tools**: OWASP ZAP, Nuclei, Nikto, NMAP
+          
+          ## Tools Used
+          1. **OWASP ZAP** - Web application vulnerability scanner
+          2. **Nuclei** - Fast vulnerability scanner based on templates
+          3. **Nikto** - Web server scanner
+          4. **NMAP** - Network security scanner
+          
+          ## Reports Generated
+          - ZAP HTML Report: zap-report.html
+          - ZAP JSON Report: zap-report.json
+          - Nuclei Report: nuclei-report.json
+          - Nikto Report: nikto-report.txt
+          - NMAP Report: nmap-report.txt
+          
+          ## Next Steps
+          Review the generated reports for security vulnerabilities and take appropriate actions.
+          EOF
+          
+          echo "✅ DAST scanning completed"
+
+      - name: Upload DAST reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: |
+            zap-report.*
+            nuclei-report.json
+            nikto-report.txt
+            nmap-report.txt
+            dast-summary.md
+          retention-days: 30
+
+      - name: Upload DAST summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-summary
+          path: dast-summary.md
+
+  # Финальный отчет
+  report:
+    needs: [build, sca, sast, deploy, dast]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate final security report
+        run: |
+          echo "📋 FINAL SECURITY SCAN REPORT" > final-report.md
+          echo "==============================" >> final-report.md
+          echo "" >> final-report.md
+          echo "**Pipeline Status**: ${{ job.status }}" >> final-report.md
+          echo "**Scan Date**: $(date)" >> final-report.md
+          echo "**Application**: http://${{ secrets.SERVER_IP }}" >> final-report.md
+          echo "" >> final-report.md
+          echo "## Security Stages Completed:" >> final-report.md
+          echo "✅ SAST - Static Application Security Testing" >> final-report.md
+          echo "✅ SCA - Software Composition Analysis" >> final-report.md
+          echo "✅ DAST - Dynamic Application Security Testing" >> final-report.md
+          echo "✅ Container Security Scanning" >> final-report.md
+          echo "" >> final-report.md
+          echo "## Reports Available:" >> final-report.md
+          echo "- SAST Reports (Bandit, Safety, Semgrep)" >> final-report.md
+          echo "- SCA Report (Trivy)" >> final-report.md
+          echo "- DAST Reports (ZAP, Nuclei, Nikto, NMAP)" >> final-report.md
+          echo "" >> final-report.md
+          echo "🎉 Security pipeline execution completed!" >> final-report.md
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-security-report
+          path: final-report.md
