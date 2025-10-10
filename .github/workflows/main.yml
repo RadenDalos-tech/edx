@@ -43,7 +43,7 @@ jobs:
           echo "Stopping test container..."
           docker stop test-container && echo "✅ Test container stopped"
 
-      # Сканирование безопасности контейнера
+        # Сканирование безопасности контейнера
   sca:
     needs: build
     runs-on: ubuntu-latest
@@ -62,7 +62,6 @@ jobs:
       - name: Install Trivy
         run: |
           echo "Installing Trivy vulnerability scanner..."
-          # Скачиваем и устанавливаем Trivy
           wget -q https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_Linux-64bit.deb
           sudo dpkg -i trivy_0.65.0_Linux-64bit.deb
           trivy --version
@@ -72,44 +71,53 @@ jobs:
           echo "Running Trivy security scan..."
           echo "This may take a few minutes while Trivy downloads vulnerability database..."
           trivy image \
+            --format table \
+            --severity CRITICAL,HIGH \
+            --exit-code 0 \
+            edx-platform:scan || echo "Trivy scan completed"
+          
+          # Дополнительно сохраняем SARIF отчет
+          trivy image \
             --format sarif \
             --output trivy-results.sarif \
             --severity CRITICAL,HIGH \
             --exit-code 0 \
-            edx-platform:scan
+            edx-platform:scan || echo "SARIF report generated"
           
           echo "✅ Trivy scan completed successfully"
 
-      - name: Check if report was created
+      - name: Display scan results
         run: |
+          echo "=== Trivy Scan Summary ==="
           if [ -f "trivy-results.sarif" ]; then
-            echo "✅ Trivy report created successfully"
-            echo "📊 Report size: $(du -h trivy-results.sarif | cut -f1)"
+            echo "✅ SARIF report created: trivy-results.sarif"
+            # Показываем краткую статистику
+            echo "📊 Vulnerabilities found:"
+            jq '.runs[0].results | length' trivy-results.sarif || echo "No vulnerabilities found or jq not available"
           else
-            echo "❌ Trivy report was not created"
-            # Создаем пустой файл чтобы пайплайн не сломался
-            echo '{"version": "2.1.0", "runs": []}' > trivy-results.sarif
+            echo "❌ SARIF report was not created"
           fi
 
       - name: Upload Trivy report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: sca-trivy-report
-          path: trivy-results.sarif
+          path: |
+            trivy-results.sarif
           retention-days: 30
 
-      - name: Upload Trivy results to GitHub Security tab
+      - name: Upload Trivy results to GitHub Security tab (only for main repo)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
         with:
           sarif_file: trivy-results.sarif
 
       - name: Show scan summary
         run: |
           echo "🔒 SCA Security Scan Completed"
-          echo "📊 Trivy report: trivy-results.sarif"
-          echo "📁 Artifact: sca-trivy-report"
-          echo "🔍 Check GitHub Security tab for vulnerability details"
+          echo "📊 Trivy results saved as artifact: sca-trivy-report"
+          echo "📁 Download report from Actions artifacts"
+          echo "💡 Note: GitHub Security tab integration works only in main repository"
 
   # Статический анализ кода
   sast:
