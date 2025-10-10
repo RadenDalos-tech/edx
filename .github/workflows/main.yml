@@ -113,7 +113,7 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-             # Деплой на сервер
+  # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
@@ -137,6 +137,12 @@ jobs:
       - name: Setup SSH with passphrase using ssh-agent
         run: |
           echo "Setting up SSH with passphrase..."
+          
+          # Устанавливаем expect
+          echo "Installing expect..."
+          sudo apt-get update
+          sudo apt-get install -y expect
+          
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
@@ -159,6 +165,9 @@ jobs:
           EOF
           
           echo "✅ SSH key added to agent"
+          echo "SSH agent PID: $SSH_AGENT_PID"
+          echo "SSH keys in agent:"
+          ssh-add -l
 
       - name: Test SSH connection
         run: |
@@ -185,31 +194,55 @@ jobs:
           # Копируем на сервер
           scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
           
-          # Разворачиваем
+          # Разворачиваем на сервере
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
           set -e
           echo "=== Starting deployment ==="
           echo "Loading Docker image..."
           docker load -i /tmp/edx-image.tar
+          
           echo "Stopping old container..."
           docker stop edx-platform || true
           docker rm edx-platform || true
+          
           echo "Starting new container..."
-          docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
+          docker run -d \
+            --name edx-platform \
+            --restart unless-stopped \
+            -p 80:80 \
+            -p 443:443 \
+            edx-platform:${{ github.sha }}
+            
           echo "Cleaning up..."
           rm /tmp/edx-image.tar
+          
+          echo "Checking running containers..."
+          docker ps
+          
           echo "✅ Deployment completed"
           EOF
 
       - name: Verify deployment
         run: |
-          echo "Waiting for application..."
+          echo "Waiting for application to start..."
           sleep 30
+          
           echo "Verifying deployment..."
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
+            set -e
             echo '=== Verification ==='
-            docker ps | grep edx-platform && echo '✅ Container running' || echo '❌ Container not found'
-            curl -f http://localhost:80/ && echo '✅ Application responding' || echo '❌ Application not responding'
+            echo '1. Checking container status...'
+            docker ps | grep edx-platform && echo '✅ Container is running' || echo '❌ Container not found'
+            
+            echo '2. Checking container logs...'
+            docker logs edx-platform --tail 20 || echo '⚠️ Could not get container logs'
+            
+            echo '3. Checking application health...'
+            curl -f http://localhost:80/ && echo '✅ Application responding on HTTP' || echo '❌ Application not responding on HTTP'
+            
+            echo '4. Checking port 80...'
+            netstat -tulpn | grep :80 && echo '✅ Port 80 is listening' || echo '❌ Port 80 not listening'
+            
             echo '=== Verification Complete ==='
           "
 
@@ -219,8 +252,14 @@ jobs:
 
       - name: Send success notification
         run: |
-          echo "🎉 Application deployed to http://${{ secrets.SERVER_IP }}"
-
-      - name: Send success notification
+          echo "🎉 Application successfully deployed to:"
+          echo "   🌐 http://${{ secrets.SERVER_IP }}"
+          echo "   📦 Image: edx-platform:${{ github.sha }}"
+          echo "   🕒 Deployment time: $(date)"
+          
+      - name: Cleanup SSH agent
+        if: always()
         run: |
-          echo "🎉 Application deployed to http://${{ secrets.SERVER_IP }}"
+          echo "Cleaning up SSH agent..."
+          eval "$(ssh-agent -k)" || true
+          rm -f ~/.ssh/id_rsa
