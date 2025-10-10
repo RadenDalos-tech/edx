@@ -146,26 +146,42 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
+          # Создаем скрипт для автоматизации ввода passphrase
+          cat > ~/ssh-add-with-passphrase.exp << 'EOF'
+          #!/usr/bin/expect -f
+          set timeout 10
+          spawn ssh-add $env(HOME)/.ssh/id_rsa
+          expect "Enter passphrase"
+          send "$env(SSH_PASSPHRASE)\r"
+          expect eof
+          EOF
+          
+          chmod +x ~/ssh-add-with-passphrase.exp
+          
           # Записываем приватный ключ
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          
+          # Проверяем что файл создан
+          echo "=== SSH Key Debug ==="
+          echo "Key file exists:" && ls -la ~/.ssh/id_rsa
+          echo "File size:" && wc -c ~/.ssh/id_rsa
+          echo "First line:" && head -1 ~/.ssh/id_rsa
+          echo "Last line:" && tail -1 ~/.ssh/id_rsa
+          echo "=== End Debug ==="
           
           # Настраиваем known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           
-          # Запускаем ssh-agent и добавляем ключ с passphrase
+          # Запускаем ssh-agent
           eval "$(ssh-agent -s)"
+          
+          # Добавляем ключ с использованием expect скрипта
           echo "Adding SSH key to agent..."
-          expect << EOF
-          spawn ssh-add ~/.ssh/id_rsa
-          expect "Enter passphrase"
-          send "${{ secrets.SSH_KEY_PASSPHRASE }}\r"
-          expect eof
-          EOF
+          SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-add-with-passphrase.exp
           
           echo "✅ SSH key added to agent"
-          echo "SSH agent PID: $SSH_AGENT_PID"
           echo "SSH keys in agent:"
           ssh-add -l
 
@@ -263,3 +279,4 @@ jobs:
           echo "Cleaning up SSH agent..."
           eval "$(ssh-agent -k)" || true
           rm -f ~/.ssh/id_rsa
+          rm -f ~/ssh-add-with-passphrase.exp
