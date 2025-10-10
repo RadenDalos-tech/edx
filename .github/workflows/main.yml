@@ -113,11 +113,10 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-      # Деплой на сервер (рабочий вариант)
+        # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
-    # Используем более надежное условие
     if: |
       (github.ref == 'refs/heads/main' || 
        github.ref == 'refs/heads/develop' || 
@@ -133,41 +132,88 @@ jobs:
           echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
           echo "🎯 Target: ${{ secrets.SERVER_IP }}"
 
-      - name: Setup SSH
+      - name: Setup SSH properly
         run: |
+          echo "Setting up SSH connection..."
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Правильно записываем приватный ключ
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-
-      - name: Build and deploy
-        run: |
-          # Собираем образ
-          docker build -t edx-platform:${{ github.sha }} .
           
-          # Деплоим
-          docker save edx-platform:${{ github.sha }} | ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
-            echo 'Loading Docker image...' &&
-            docker load &&
-            echo 'Stopping old container...' &&
-            docker stop edx-platform || true &&
-            docker rm edx-platform || true &&
-            echo 'Starting new container...' &&
-            docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }} &&
-            echo '✅ Deployment completed successfully'
-          "
+          # Добавляем сервер в known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          
+          echo "SSH setup completed"
+
+      - name: Test SSH connection
+        run: |
+          echo "Testing SSH connection to server..."
+          ssh -o BatchMode=yes -o ConnectTimeout=5 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || echo "❌ SSH connection failed"
+
+      - name: Build application image
+        run: |
+          echo "Building Docker image..."
+          docker build -t edx-platform:${{ github.sha }} .
+
+      - name: Deploy to server
+        run: |
+          echo "Deploying to ${{ secrets.SERVER_IP }}..."
+          
+          # Сохраняем образ в файл
+          docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
+          
+          # Копируем на сервер и разворачиваем
+          scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
+          
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          set -e
+          echo "=== Starting deployment on server ==="
+          
+          echo "Loading Docker image..."
+          docker load -i /tmp/edx-image.tar
+          
+          echo "Stopping old container..."
+          docker stop edx-platform || true
+          docker rm edx-platform || true
+          
+          echo "Starting new container..."
+          docker run -d \
+            --name edx-platform \
+            --restart unless-stopped \
+            -p 80:80 \
+            edx-platform:${{ github.sha }}
+          
+          echo "Cleaning up..."
+          rm /tmp/edx-image.tar
+          
+          echo "✅ Deployment completed successfully"
+          EOF
 
       - name: Verify deployment
         run: |
           echo "Waiting for application to start..."
           sleep 30
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
-            echo '=== Deployment Verification ===' &&
-            docker ps | grep edx-platform && echo '✅ Container running' || echo '❌ Container not found' &&
-            curl -f http://localhost:80/ && echo '✅ Application responding' || echo '❌ Application not responding' &&
-            echo '=== Verification Complete ==='
-          "
+          echo "Verifying deployment..."
+          
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          set -e
+          echo "=== Deployment Verification ==="
+          echo "Container status:"
+          docker ps | grep edx-platform && echo "✅ Container is running" || echo "❌ Container not found"
+          echo "Application health check:"
+          curl -f http://localhost:80/ && echo "✅ Application is responding" || echo "❌ Application health check failed"
+          echo "=== Verification Complete ==="
+          EOF
 
       - name: Store URL for DAST
         run: |
           echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
+          echo "DAST target: http://${{ secrets.SERVER_IP }}"
+
+      - name: Send deployment notification
+        run: |
+          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
+          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
