@@ -113,7 +113,7 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-         # Деплой на сервер
+           # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
@@ -128,134 +128,89 @@ jobs:
 
       - name: Show deployment info
         run: |
-          echo "🚀 Starting deployment process..."
+          echo "🚀 Starting deployment..."
           echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
-          echo "🎯 Target Server: ${{ secrets.SERVER_IP }}"
-          echo "👤 SSH User: ${{ secrets.SERVER_USER }}"
-          echo "🔐 Authentication: Password"
-          echo "🐳 Docker Image: edx-platform:${{ github.sha }}"
+          echo "🎯 Target: ${{ secrets.SERVER_IP }}"
+          echo "👤 User: ${{ secrets.SERVER_USER }}"
+          echo "🔐 Auth: SSH Key + Passphrase"
 
-      - name: Install required tools
+      - name: Setup SSH with passphrase
         run: |
-          echo "Installing deployment tools..."
-          sudo apt-get update
-          sudo apt-get install -y sshpass expect
-
-      - name: Setup SSH known hosts
-        run: |
-          echo "Configuring SSH known hosts..."
+          echo "Setting up SSH with key and passphrase..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null || echo "Known hosts configured"
+          
+          # Записываем приватный ключ
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          # Настраиваем known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          
+          echo "SSH setup completed"
+
+      - name: Install sshpass for passphrase
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Test SSH connection with passphrase
+        run: |
+          echo "Testing SSH connection with passphrase..."
+          # Используем sshpass для ввода passphrase ключа
+          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e ssh -o BatchMode=no -o ConnectTimeout=10 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || {
+            echo "❌ SSH connection failed"
+            echo "💡 Check: Passphrase, key format, server availability"
+            exit 1
+          }
 
       - name: Build application image
         run: |
-          echo "🏗️ Building Docker image..."
+          echo "Building Docker image..."
           docker build -t edx-platform:${{ github.sha }} .
-          echo "✅ Docker image built successfully"
 
-      - name: Deploy using expect script
+      - name: Deploy to server
         run: |
-          echo "🚀 Deploying application using expect..."
+          echo "Deploying to ${{ secrets.SERVER_IP }}..."
           
-          # Создаем expect скрипт для автоматизации деплоя
-          cat > deploy.exp << 'EOF'
-          #!/usr/bin/expect -f
-          set timeout 60
-          
-          # Копируем Docker образ на сервер
-          spawn scp /tmp/edx-image.tar root@194.87.131.127:/tmp/
-          expect "password:"
-          send "kali\r"
-          expect eof
-          
-          # Подключаемся к серверу и разворачиваем
-          spawn ssh root@194.87.131.127
-          expect "password:"
-          send "kali\r"
-          expect "# "
-          send "echo '=== Starting Deployment ==='\r"
-          expect "# "
-          send "docker load -i /tmp/edx-image.tar\r"
-          expect "# "
-          send "docker stop edx-platform || true\r"
-          expect "# "
-          send "docker rm edx-platform || true\r"
-          expect "# "
-          send "docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}\r"
-          expect "# "
-          send "rm /tmp/edx-image.tar\r"
-          expect "# "
-          send "echo '✅ Deployment completed successfully'\r"
-          expect "# "
-          send "exit\r"
-          expect eof
-          EOF
-          
-          chmod +x deploy.exp
-          
-          # Сохраняем Docker образ в файл
-          echo "Saving Docker image to file..."
+          # Сохраняем образ
           docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
           
-          # Запускаем деплой
-          echo "Starting deployment process..."
-          ./deploy.exp
+          # Копируем на сервер используя passphrase
+          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
           
-          echo "✅ Deployment script executed"
+          # Разворачиваем используя passphrase
+          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          set -e
+          echo "=== Starting deployment ==="
+          echo "Loading Docker image..."
+          docker load -i /tmp/edx-image.tar
+          echo "Stopping old container..."
+          docker stop edx-platform || true
+          docker rm edx-platform || true
+          echo "Starting new container..."
+          docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
+          echo "Cleaning up..."
+          rm /tmp/edx-image.tar
+          echo "✅ Deployment completed"
+          EOF
 
       - name: Verify deployment
         run: |
-          echo "🔍 Verifying deployment..."
-          
-          # Создаем expect скрипт для проверки
-          cat > verify.exp << 'EOF'
-          #!/usr/bin/expect -f
-          set timeout 30
-          
-          spawn ssh root@194.87.131.127
-          expect "password:"
-          send "kali\r"
-          expect "# "
-          send "echo '=== Deployment Verification ==='\r"
-          expect "# "
-          send "docker ps | grep edx-platform && echo '✅ Container is running' || echo '❌ Container not found'\r"
-          expect "# "
-          send "curl -f http://localhost:80/ && echo '✅ Application is responding' || echo '❌ Application not responding'\r"
-          expect "# "
-          send "echo '=== Verification Complete ==='\r"
-          expect "# "
-          send "exit\r"
-          expect eof
-          EOF
-          
-          chmod +x verify.exp
-          
-          echo "Waiting for application to start..."
+          echo "Waiting for application..."
           sleep 30
-          ./verify.exp
+          echo "Verifying deployment..."
+          SSHPASS='${{ secrets.SSH_KEY_PASSPHRASE }}' sshpass -e ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
+            echo '=== Verification ==='
+            docker ps | grep edx-platform && echo '✅ Container running' || echo '❌ Container not found'
+            curl -f http://localhost:80/ && echo '✅ Application responding' || echo '❌ Application not responding'
+            echo '=== Verification Complete ==='
+          "
 
       - name: Store URL for DAST
         run: |
           echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
-          echo "🎯 DAST target configured: http://${{ secrets.SERVER_IP }}"
 
-      - name: Final deployment summary
+      - name: Send success notification
         run: |
-          echo "🎉 DEPLOYMENT COMPLETED SUCCESSFULLY"
-          echo "==================================="
-          echo "📊 Deployment Summary:"
-          echo "   • Server: ${{ secrets.SERVER_IP }}"
-          echo "   • Application: edX Platform"
-          echo "   • Docker Image: edx-platform:${{ github.sha }}"
-          echo "   • Status: ✅ Successfully deployed"
-          echo "   • URL: http://${{ secrets.SERVER_IP }}"
-          echo ""
-          echo "🚀 CI/CD Pipeline Status:"
-          echo "   ✅ Build: Docker image built and tested"
-          echo "   ✅ SAST: Static code security analysis"
-          echo "   ✅ SCA: Container vulnerability scanning"
-          echo "   ✅ Deploy: Application deployed to production"
-          echo "   🔜 DAST: Dynamic security testing ready"
-          echo ""
-          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
+          echo "🎉 Application deployed to http://${{ secrets.SERVER_IP }}"
