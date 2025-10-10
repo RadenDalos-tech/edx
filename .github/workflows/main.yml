@@ -114,148 +114,125 @@ jobs:
             semgrep-report.json
 
   # Деплой на сервер
-  deploy:
-    needs: [build, sca, sast]
-    runs-on: ubuntu-latest
-    if: |
-      (github.ref == 'refs/heads/main' || 
-       github.ref == 'refs/heads/develop' || 
-       github.event_name == 'workflow_dispatch')
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+deploy:
+  needs: [build, sca, sast]
+  runs-on: ubuntu-latest
+  if: |
+    (github.ref == 'refs/heads/main' || 
+     github.ref == 'refs/heads/develop' || 
+     github.event_name == 'workflow_dispatch')
+  
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Show deployment info
-        run: |
-          echo "🚀 Starting deployment..."
-          echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
-          echo "🎯 Target: ${{ secrets.SERVER_IP }}"
-          echo "👤 User: ${{ secrets.SERVER_USER }}"
-          echo "🔐 Auth: SSH Key with Passphrase"
+    - name: Show deployment info
+      run: |
+        echo "🚀 Starting deployment..."
+        echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
+        echo "🎯 Target: ${{ secrets.SERVER_IP }}"
+        echo "👤 User: root"
+        echo "🔐 Auth: SSH Key with Passphrase"
 
-      - name: Setup SSH with sshpass
-        run: |
-          echo "Setting up SSH with sshpass..."
-          
-          # Устанавливаем sshpass
-          sudo apt-get update
-          sudo apt-get install -y sshpass
-          
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          
-          # Записываем приватный ключ
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          
-          # Проверяем ключ
-          echo "=== SSH Key Verification ==="
-          echo "Key file exists:" && ls -la ~/.ssh/id_rsa
-          echo "Key format:" && head -1 ~/.ssh/id_rsa
-          echo "Key fingerprint:" && ssh-keygen -lf ~/.ssh/id_rsa
-          echo "=== End Verification ==="
-          
-          # Настраиваем known_hosts
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-          
-          echo "✅ SSH setup completed"
-
-      - name: Test SSH connection with sshpass
-        run: |
-          echo "Testing SSH connection to root@${{ secrets.SERVER_IP }}..."
-          sshpass -p "${{ secrets.SSH_KEY_PASSPHRASE }}" ssh -o BatchMode=yes -o ConnectTimeout=10 root@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || {
-            echo "❌ SSH connection failed"
-            echo "💡 Debug info:"
-            sshpass -p "${{ secrets.SSH_KEY_PASSPHRASE }}" ssh -o BatchMode=yes -v root@${{ secrets.SERVER_IP }} "echo test" || true
-            exit 1
+    - name: Setup SSH with expect
+      run: |
+        echo "Setting up SSH with expect..."
+        
+        # Устанавливаем expect
+        sudo apt-get update
+        sudo apt-get install -y expect
+        
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        # Записываем приватный ключ
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        
+        echo "=== SSH Key Debug ==="
+        echo "Key file:" && ls -la ~/.ssh/id_rsa
+        echo "First line:" && head -1 ~/.ssh/id_rsa
+        echo "=== End Debug ==="
+        
+        # Настраиваем known_hosts
+        ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+        
+        # Создаем expect скрипт для SSH
+        cat > ~/ssh-with-passphrase.exp << 'EOF'
+        #!/usr/bin/expect -f
+        set timeout 30
+        set host [lindex $argv 0]
+        set command [lindex $argv 1]
+        spawn ssh -o StrictHostKeyChecking=yes $host $command
+        expect {
+          "Enter passphrase for key*" {
+            send "$env(SSH_PASSPHRASE)\r"
+            exp_continue
           }
+          "password:" {
+            send "$env(SSH_PASSPHRASE)\r"
+            exp_continue
+          }
+          eof
+        }
+        catch wait result
+        exit [lindex $result 3]
+        EOF
+        
+        chmod +x ~/ssh-with-passphrase.exp
 
-      - name: Build application image
-        run: |
-          echo "Building Docker image..."
-          docker build -t edx-platform:${{ github.sha }} .
+    - name: Test SSH connection with expect
+      run: |
+        echo "Testing SSH connection..."
+        SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "echo '✅ SSH connection successful'" || {
+          echo "❌ SSH connection failed"
+          exit 1
+        }
 
-      - name: Deploy to server with sshpass
-        run: |
-          echo "Deploying to root@${{ secrets.SERVER_IP }}..."
-          
-          # Сохраняем образ
-          docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
-          
-          # Копируем на сервер с использованием sshpass
-          sshpass -p "${{ secrets.SSH_KEY_PASSPHRASE }}" scp /tmp/edx-image.tar root@${{ secrets.SERVER_IP }}:/tmp/
-          
-          # Разворачиваем на сервере с использованием sshpass
-          sshpass -p "${{ secrets.SSH_KEY_PASSPHRASE }}" ssh root@${{ secrets.SERVER_IP }} << 'EOF'
+    - name: Build application image
+      run: |
+        echo "Building Docker image..."
+        docker build -t edx-platform:${{ github.sha }} .
+
+    - name: Deploy to server with expect
+      run: |
+        echo "Deploying to server..."
+        
+        # Сохраняем образ
+        docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
+        
+        # Создаем expect скрипт для SCP
+        cat > ~/scp-with-passphrase.exp << 'EOF'
+        #!/usr/bin/expect -f
+        set timeout 60
+        set source [lindex $argv 0]
+        set destination [lindex $argv 1]
+        spawn scp $source $destination
+        expect {
+          "Enter passphrase for key*" {
+            send "$env(SSH_PASSPHRASE)\r"
+            exp_continue
+          }
+          eof
+        }
+        catch wait result
+        exit [lindex $result 3]
+        EOF
+        
+        chmod +x ~/scp-with-passphrase.exp
+        
+        # Копируем на сервер
+        SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/scp-with-passphrase.exp "/tmp/edx-image.tar" "root@${{ secrets.SERVER_IP }}:/tmp/"
+        
+        # Разворачиваем на сервере
+        SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "
           set -e
-          echo "=== Starting deployment as root ==="
-          echo "Loading Docker image..."
+          echo '=== Starting deployment ==='
           docker load -i /tmp/edx-image.tar
-          
-          echo "Stopping old container..."
           docker stop edx-platform || true
           docker rm edx-platform || true
-          
-          echo "Starting new container..."
-          docker run -d \
-            --name edx-platform \
-            --restart unless-stopped \
-            -p 80:80 \
-            -p 443:443 \
-            edx-platform:${{ github.sha }}
-            
-          echo "Cleaning up..."
+          docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }}
           rm /tmp/edx-image.tar
-          
-          echo "Checking running containers..."
-          docker ps
-          
-          echo "✅ Deployment completed as root"
-          EOF
-
-      - name: Verify deployment with sshpass
-        run: |
-          echo "Waiting for application to start..."
-          sleep 30
-          
-          echo "Verifying deployment..."
-          sshpass -p "${{ secrets.SSH_KEY_PASSPHRASE }}" ssh root@${{ secrets.SERVER_IP }} "
-            set -e
-            echo '=== Verification ==='
-            echo '1. Checking container status...'
-            docker ps | grep edx-platform && echo '✅ Container is running' || echo '❌ Container not found'
-            
-            echo '2. Checking container logs...'
-            docker logs edx-platform --tail 20 || echo '⚠️ Could not get container logs'
-            
-            echo '3. Checking application health...'
-            curl -f http://localhost:80/ && echo '✅ Application responding on HTTP' || echo '❌ Application not responding on HTTP'
-            
-            echo '4. Checking port 80...'
-            netstat -tulpn | grep :80 && echo '✅ Port 80 is listening' || echo '❌ Port 80 not listening'
-            
-            echo '5. Checking disk space...'
-            df -h /tmp /var/lib/docker
-            
-            echo '=== Verification Complete ==='
-          "
-
-      - name: Store URL for DAST
-        run: |
-          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
-
-      - name: Send success notification
-        run: |
-          echo "🎉 Application successfully deployed to:"
-          echo "   🌐 http://${{ secrets.SERVER_IP }}"
-          echo "   📦 Image: edx-platform:${{ github.sha }}"
-          echo "   👤 User: root"
-          echo "   🕒 Deployment time: $(date)"
-          
-      - name: Cleanup SSH
-        if: always()
-        run: |
-          echo "Cleaning up SSH files..."
-          rm -f ~/.ssh/id_rsa
+          echo '✅ Deployment completed'
+        "
