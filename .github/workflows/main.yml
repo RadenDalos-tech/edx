@@ -113,22 +113,61 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-    # Деплой на сервер
+      # Деплой на сервер (рабочий вариант)
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
+    # Используем более надежное условие
+    if: |
+      (github.ref == 'refs/heads/main' || 
+       github.ref == 'refs/heads/develop' || 
+       github.event_name == 'workflow_dispatch')
     
     steps:
-      - name: Debug deployment conditions
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show deployment info
         run: |
-          echo "=== Debug Information ==="
-          echo "GitHub Ref: ${{ github.ref }}"
-          echo "GitHub Event Name: ${{ github.event_name }}"
-          echo "GitHub Base Ref: ${{ github.base_ref }}"
-          echo "GitHub Head Ref: ${{ github.head_ref }}"
-          echo "Current Branch: ${GITHUB_REF#refs/heads/}"
-          echo "Is Main Branch: ${{ github.ref == 'refs/heads/main' }}"
-          echo "Is Develop Branch: ${{ github.ref == 'refs/heads/develop' }}"
-          echo "Should Deploy: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}"
-          echo "=== End Debug ==="ct: dast-reports"
-          echo "🔍 Download from Actions to review security findings"
+          echo "🚀 Starting deployment..."
+          echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
+          echo "🎯 Target: ${{ secrets.SERVER_IP }}"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Build and deploy
+        run: |
+          # Собираем образ
+          docker build -t edx-platform:${{ github.sha }} .
+          
+          # Деплоим
+          docker save edx-platform:${{ github.sha }} | ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
+            echo 'Loading Docker image...' &&
+            docker load &&
+            echo 'Stopping old container...' &&
+            docker stop edx-platform || true &&
+            docker rm edx-platform || true &&
+            echo 'Starting new container...' &&
+            docker run -d --name edx-platform --restart unless-stopped -p 80:80 edx-platform:${{ github.sha }} &&
+            echo '✅ Deployment completed successfully'
+          "
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for application to start..."
+          sleep 30
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "
+            echo '=== Deployment Verification ===' &&
+            docker ps | grep edx-platform && echo '✅ Container running' || echo '❌ Container not found' &&
+            curl -f http://localhost:80/ && echo '✅ Application responding' || echo '❌ Application not responding' &&
+            echo '=== Verification Complete ==='
+          "
+
+      - name: Store URL for DAST
+        run: |
+          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
