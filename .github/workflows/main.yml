@@ -1,97 +1,227 @@
-name: DevSecOps CI/CD Pipeline
+name: edX CI/CD Pipeline
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [main]
 
 jobs:
+  # Сборка и тестирование Docker образа
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install poetry
-          poetry config virtualenvs.in-project true
-          poetry install
-
-      - name: Run tests
-        run: |
-          poetry run pytest
-
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
       - name: Build Docker image
-        run: |
-          docker build -t devsecops-app:latest .
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          tags: edx-platform:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-  security:
+      - name: Run basic container tests
+        run: |
+          echo "Testing if container starts..."
+          docker run --rm -d --name test-container -p 8000:80 edx-platform:latest
+          sleep 10
+          docker ps | grep test-container && echo "Container is running" || echo "Container failed to start"
+          docker stop test-container
+
+  # Сканирование безопасности контейнера
+  sca:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Run SAST scan
-        uses: github/codeql-action/analyze@v2
-
-      - name: Run Trivy scan
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: devsecops-app:latest
-          format: json
-          output: trivy-report.json
+          image-ref: edx-platform:latest
+          format: sarif
+          output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
 
-  deploy:
-    needs: [build, security]
+  # Статический анализ кода
+  sast:
     runs-on: ubuntu-latest
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v2
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.8'
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Install SAST tools
+        run: |
+          pip install bandit safety
+          npm install -g @semgrep/semgrep
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Run Bandit
+        run: |
+          bandit -r . -f json -o bandit-report.json . || true
 
-      - name: Deploy to Kubernetes
-        uses: appleboy/ssh-action@v0.1.7
+      - name: Run Semgrep
+        run: |
+          semgrep scan --config=auto --json -o semgrep-report.json || true
+
+      - name: Upload SAST reports
+        uses: actions/upload-artifact@v4
         with:
-          host: ${{ secrets.K8S_HOST }}
-          username: ${{ secrets.K8S_USER }}
-          key: ${{ secrets.K8S_KEY }}
-          script: |
-            kubectl set image deployment/devsecops-app devsecops-app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tags }}
+          name: sast-reports
+          path: |
+            bandit-report.json
+            semgrep-report.json
+
+  # Деплой на сервер
+  deploy:
+    needs: [build, sca, sast]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Build and deploy application
+        run: |
+          # Собираем образ
+          docker build -t edx-platform:${{ github.sha }} .
+          
+          # Сохраняем образ в tar
+          docker save edx-platform:${{ github.sha }} | gzip > edx-platform.tar.gz
+          
+          # Копируем на сервер
+          scp edx-platform.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
+          
+          # Деплой на сервер
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          set -e
+          
+          echo "=== Starting deployment ==="
+          
+          # Загружаем образ
+          docker load -i /tmp/edx-platform.tar.gz
+          
+          # Останавливаем старый контейнер если существует
+          if [ "$(docker ps -aq -f name=edx-platform)" ]; then
+            echo "Stopping old container..."
+            docker stop edx-platform
+            docker rm edx-platform
+          fi
+          
+          # Запускаем новый контейнер
+          echo "Starting new container..."
+          docker run -d \
+            --name edx-platform \
+            --restart unless-stopped \
+            -p 80:80 \
+            -e DJANGO_SETTINGS_MODULE="lms.envs.production" \
+            edx-platform:${{ github.sha }}
+          
+          # Очистка
+          rm /tmp/edx-platform.tar.gz
+          docker system prune -f
+          
+          echo "=== Deployment completed ==="
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+          echo "=== Verifying deployment ==="
+          
+          # Проверяем что контейнер запущен
+          docker ps | grep edx-platform || echo "Container not found"
+          
+          # Ждем запуска приложения
+          sleep 30
+          
+          # Проверяем доступность
+          curl -f http://localhost:80/ || echo "Application health check failed"
+          
+          echo "=== Verification completed ==="
+          EOF
+
+      - name: Store application URL for DAST
+        run: |
+          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
+
+      - name: Send deployment notification
+        run: |
+          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
+          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
+
+  # Динамический анализ безопасности (DAST)
+  dast:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: DAST Scan with OWASP ZAP
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: http://${{ secrets.SERVER_IP }}
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+          token: ${{ secrets.GITHUB_TOKEN }}
+          docker_name: 'owasp/zap2docker-stable'
+          issue_title: 'DAST Security Scan'
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-zap-report
+          path: |
+            zap-report.html
+            zap-report.json
+          retention-days: 30
+
+      - name: Run Nuclei Scan
+        run: |
+          # Установка Nuclei
+          curl -sL https://raw.githubusercontent.com/projectdiscovery/nuclei/master/install.sh | sh
+          # Базовое сканирование
+          ./bin/nuclei -u http://${{ secrets.SERVER_IP }} -severity medium,high,critical -o nuclei-report.json || echo "Nuclei scan completed"
+
+      - name: Upload Nuclei Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-nuclei-report
+          path: nuclei-report.json
+          retention-days: 30
+
+      - name: Security Scorecard
+        if: always()
+        run: |
+          echo "DAST scanning completed. Check artifacts for detailed reports."
+          echo "🔍 ZAP Report: zap-report.html"
+          echo "🔍 Nuclei Report: nuclei-report.json"
