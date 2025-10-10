@@ -1,4 +1,3 @@
-
 name: edX CI/CD Pipeline
 
 # События, при которых запускается пайплайн
@@ -81,99 +80,6 @@ jobs:
           name: trivy-report # Имя артефакта
           path: trivy-report.json # Путь к файлу отчета
 
-  deploy:
-  # Определение задания деплоймента
-  # Зависимости от предыдущих этапов
-  needs: build, sca
-  # Конфигурация окружения выполнения
-  runs-on: ubuntu-latest
-  # Определение переменных окружения для удобства использования
-  env:
-    DEPLOY_USER: ${{ secrets.DEPLOY_USER }}  # Пользователь для SSH-подключения
-    VPS_IP: ${{ secrets.VPS_IP }}            # IP-адрес сервера
-    DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}  # Репозиторий Docker
-
-  steps:
-    # Шаг 1: Клонирование репозитория
-    - name: Checkout repository
-      uses: actions/checkout@v3  # Использование стандартного экшена для чекаута
-
-    # Шаг 2: Авторизация в Docker Hub
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2  # Использование специального экшена для входа
-      with:
-        username: ${{ secrets.DOCKER_HUB_USERNAME }}  # Имя пользователя из секретов
-        password: ${{ secrets.DOCKER_HUB_PASSWORD }}  # Пароль из секретов
-
-    # Шаг 3: Сборка и публикация Docker-образа
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v3  # Использование экшена для сборки и публикации
-      with:
-        context: .  # Контекст сборки (текущая директория)
-        push: true  # Флаг для публикации образа
-        tags: ${{ env.DOCKER_REGISTRY }}/edx-platform:latest  # Тег для публикации
-
-    # Шаг 4: Подготовка SSH-окружения
-    - name: Prepare SSH environment
-      run: |  # Выполнение команд
-        mkdir -p ~/.ssh  # Создание директории для SSH-ключей
-        ssh-keyscan -H ${{ env.VPS_IP }} >> ~/.ssh/known_hosts  # Добавление хоста в known_hosts
-        chmod 600 ~/.ssh/known_hosts  # Установка правильных прав доступа
-
-    # Шаг 5: Создание резервной копии текущего контейнера
-    - name: Backup current container
-      run: |
-        ssh ${{ env.DEPLOY_USER }}@${{ env.VPS_IP }} << EOF  # Подключение по SSH
-        docker container prune -f  # Очистка неиспользуемых контейнеров
-        docker image prune -f  # Очистка неиспользуемых образов
-        docker commit edx-platform ${{ env.DOCKER_REGISTRY }}/edx-platform:backup-$(date +%Y%m%d%H%M%S)  # Создание снапшота
-        EOF
-
-    # Шаг 6: Развертывание на VPS
-    - name: Deploy to VPS
-      run: |
-        ssh -o StrictHostKeyChecking=accept-new ${{ env.DEPLOY_USER }}@${{ env.VPS_IP }} << EOF  # Подключение по SSH с автоматической проверкой ключа
-        set -euxo pipefail  # Включение строгого режима обработки ошибок
-
-        # Остановка и удаление существующего контейнера
-        if "$(docker ps -aq -f name=edx-platform)" ; then
-          docker stop edx-platform
-          docker rm edx-platform
-        fi
-
-        # Загрузка нового образа
-        docker pull ${{ env.DOCKER_REGISTRY }}/edx-platform:latest
-
-        # Запуск нового контейнера
-        docker run -d --name edx-platform \
-          -p 80:80 \
-          -e ENV=production \
-          ${{ env.DOCKER_REGISTRY }}/edx-platform:latest
-
-        # Ожидание запуска сервиса
-        sleep 60
-
-        # Проверка работоспособности сервиса
-        if ! curl --silent --head --fail http://localhost; then
-          echo "Service is not responding, rolling back..."  # Сообщение об ошибке
-          docker stop edx-platform
-          docker rm edx-platform
-          docker run -d --name edx-platform \
-            -p 80:80 \
-            -e ENV=production \
-            ${{ env.DOCKER_REGISTRY }}/edx-platform:backup-$(date +%Y%m%d%H%M%S)
-          exit 1
-        fi
-        EOF
-
-    # Шаг 7: Очистка старых бэкапов
-    - name: Clean up old backups
-      if: always()  # Выполнение всегда, даже при ошибке
-      run: |
-        ssh ${{ env.DEPLOY_USER }}@${{ env.VPS_IP }} << EOF  # Подключение по SSH
-        docker
-
-
   # Статический анализ безопасности
   sast:
     needs: build # Зависимость от успешного завершения сборки
@@ -208,7 +114,6 @@ jobs:
             bandit_report.json # Отчет Bandit
             semgrep-results.json # Отчет Semgrep
 
-
   # Динамический анализ безопасности
   dast:
     needs: sast # Зависимость от успешного завершения SAST
@@ -237,3 +142,96 @@ jobs:
         with:
           name: dast-reports # Имя артефакта
           path: dast_report.html # Путь к отчету
+
+  # Задание деплоймента
+  deploy:
+    needs: [build, sca, sast] # Зависимости от предыдущих этапов
+    runs-on: ubuntu-latest # Конфигурация окружения выполнения
+    
+    # Определение переменных окружения для удобства использования
+    env:
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}  # Пользователь для SSH-подключения
+      VPS_IP: ${{ secrets.VPS_IP }}            # IP-адрес сервера
+      DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}  # Репозиторий Docker
+
+    steps:
+      # Шаг 1: Клонирование репозитория
+      - name: Checkout repository
+        uses: actions/checkout@v3  # Использование стандартного экшена для чекаута
+
+      # Шаг 2: Авторизация в Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2  # Использование специального экшена для входа
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}  # Имя пользователя из секретов
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}  # Пароль из секретов
+
+      # Шаг 3: Сборка и публикация Docker-образа
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3  # Использование экшена для сборки и публикации
+        with:
+          context: .  # Контекст сборки (текущая директория)
+          push: true  # Флаг для публикации образа
+          tags: ${{ env.DOCKER_REGISTRY }}/edx-platform:latest  # Тег для публикации
+
+      # Шаг 4: Подготовка SSH-окружения
+      - name: Prepare SSH environment
+        run: |  # Выполнение команд
+          mkdir -p ~/.ssh  # Создание директории для SSH-ключей
+          ssh-keyscan -H ${{ env.VPS_IP }} >> ~/.ssh/known_hosts  # Добавление хоста в known_hosts
+          chmod 600 ~/.ssh/known_hosts  # Установка правильных прав доступа
+
+      # Шаг 5: Создание резервной копии текущего контейнера
+      - name: Backup current container
+        run: |
+          ssh ${{ env.DEPLOY_USER }}@${{ env.VPS_IP }} << EOF  # Подключение по SSH
+          docker container prune -f  # Очистка неиспользуемых контейнеров
+          docker image prune -f  # Очистка неиспользуемых образов
+          docker commit edx-platform ${{ env.DOCKER_REGISTRY }}/edx-platform:backup-$(date +%Y%m%d%H%M%S)  # Создание снапшота
+          EOF
+
+      # Шаг 6: Развертывание на VPS
+      - name: Deploy to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ${{ env.DEPLOY_USER }}@${{ env.VPS_IP }} << 'EOF'  # Подключение по SSH с автоматической проверкой ключа
+          set -euxo pipefail  # Включение строгого режима обработки ошибок
+
+          # Остановка и удаление существующего контейнера
+          if [ "$(docker ps -aq -f name=edx-platform)" ]; then
+            docker stop edx-platform
+            docker rm edx-platform
+          fi
+
+          # Загрузка нового образа
+          docker pull ${{ env.DOCKER_REGISTRY }}/edx-platform:latest
+
+          # Запуск нового контейнера
+          docker run -d --name edx-platform \
+            -p 80:80 \
+            -e ENV=production \
+            ${{ env.DOCKER_REGISTRY }}/edx-platform:latest
+
+          # Ожидание запуска сервиса
+          sleep 60
+
+          # Проверка работоспособности сервиса
+          if ! curl --silent --head --fail http://localhost; then
+            echo "Service is not responding, rolling back..."  # Сообщение об ошибке
+            docker stop edx-platform
+            docker rm edx-platform
+            # Восстановление из бэкапа (нужно доработать логику)
+            exit 1
+          fi
+          EOF
+
+      # Шаг 7: Очистка старых бэкапов
+      - name: Clean up old backups
+        if: always()  # Выполнение всегда, даже при ошибке
+        run: |
+          ssh ${{ env.DEPLOY_USER }}@${{ env.VPS_IP }} << 'EOF'
+          # Очистка образов старше 7 дней
+          docker images --filter "reference=${{ env.DOCKER_REGISTRY }}/edx-platform:backup-*" --format "{{.ID}} {{.CreatedSince}}" | \
+          grep -E "([5-9][0-9]|1[0-9][0-9]) days|[2-9][0-9][0-9] days" | \
+          awk '{print $1}' | \
+          xargs -r docker rmi || true
+          EOF
