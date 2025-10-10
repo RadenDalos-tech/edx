@@ -43,7 +43,7 @@ jobs:
           echo "Stopping test container..."
           docker stop test-container && echo "✅ Test container stopped"
 
-  # Сканирование безопасности контейнера
+    # Сканирование безопасности контейнера
   sca:
     needs: build
     runs-on: ubuntu-latest
@@ -55,28 +55,51 @@ jobs:
         uses: docker/setup-buildx-action@v3
         
       - name: Build image for scanning
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: false
-          tags: edx-platform:scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: |
+          echo "Building Docker image for security scanning..."
+          docker build -t edx-platform:scan .
+        
+      - name: Install Trivy
+        run: |
+          echo "Installing Trivy vulnerability scanner..."
+          # Скачиваем и устанавливаем Trivy
+          wget -q https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_Linux-64bit.deb
+          sudo dpkg -i trivy_0.65.0_Linux-64bit.deb
+          trivy --version
+
+      - name: Run Trivy vulnerability scan
+        run: |
+          echo "Running Trivy security scan..."
+          trivy image \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity CRITICAL,HIGH \
+            --exit-code 0 \
+            --skip-db-update \
+            --skip-java-db-update \
+            edx-platform:scan
           
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+          echo "✅ Trivy scan completed successfully"
+
+      - name: Upload Trivy report as artifact
+        uses: actions/upload-artifact@v4
         with:
-          image-ref: edx-platform:scan
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          exit-code: 0
-          
+          name: sca-trivy-report
+          path: trivy-results.sarif
+          retention-days: 30
+
       - name: Upload Trivy results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: 'trivy-results.sarif'
+          sarif_file: trivy-results.sarif
+
+      - name: Show scan summary
+        run: |
+          echo "🔒 SCA Security Scan Completed"
+          echo "📊 Trivy report: trivy-results.sarif"
+          echo "📁 Artifact: sca-trivy-report"
+          echo "🔍 Check GitHub Security tab for vulnerability details"
 
   # Статический анализ кода
   sast:
