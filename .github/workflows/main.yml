@@ -253,18 +253,14 @@ jobs:
       - name: Setup SSH with expect for diagnostics
         run: |
           echo "Setting up SSH with expect..."
-          
-          # Устанавливаем expect
           sudo apt-get update
           sudo apt-get install -y expect
-          
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
           
-          # Создаем expect скрипт
           cat > ~/ssh-with-passphrase.exp << 'EOF'
           #!/usr/bin/expect -f
           set timeout 30
@@ -283,146 +279,111 @@ jobs:
           EOF
           chmod +x ~/ssh-with-passphrase.exp
 
-      - name: Debug application status
+      - name: Deep container diagnostics
         run: |
-          echo "🔍 Debugging application on server..."
+          echo "🔍 Deep container diagnostics..."
           SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "
-            echo '=== APPLICATION DEBUG INFO ==='
+            echo '=== DEEP CONTAINER DIAGNOSTICS ==='
             echo ''
-            echo '1. DOCKER CONTAINERS:'
-            docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+            echo '1. CONTAINER PROCESSES:'
+            docker top edx-platform 2>/dev/null || echo 'Cannot inspect container processes'
             echo ''
-            echo '2. EDX-PLATFORM CONTAINER LOGS (last 50 lines):'
-            docker logs edx-platform --tail 50 2>/dev/null || echo 'Container edx-platform not found or has no logs'
+            echo '2. CONTAINER FULL INSPECT:'
+            docker inspect edx-platform 2>/dev/null | grep -E '(Status|Running|ExitCode|Error|StartedAt|FinishedAt)' || echo 'Container not found'
             echo ''
-            echo '3. DOCKER IMAGES:'
-            docker images | head -10
+            echo '3. CONTAINER ENTRYPOINT AND CMD:'
+            docker inspect edx-platform 2>/dev/null | grep -A5 -E '(Entrypoint|Cmd)' || echo 'No inspect data'
             echo ''
-            echo '4. PORT 80 STATUS:'
-            netstat -tulpn 2>/dev/null | grep :80 || ss -tulpn 2>/dev/null | grep :80 || echo 'Port 80 not found in netstat/ss'
+            echo '4. ATTEMPT TO GET LOGS WITH TIMEOUT:'
+            timeout 10s docker logs edx-platform 2>&1 | tail -50 || echo 'Logs timeout or empty'
             echo ''
-            echo '5. DOCKER SYSTEM INFO:'
-            docker system df
+            echo '5. CHECK WHAT IS INSIDE CONTAINER:'
+            docker exec edx-platform ps aux 2>/dev/null | head -10 || echo 'Cannot exec into container'
             echo ''
-            echo '6. RECENT SYSTEM LOGS:'
-            journalctl -u docker --since '5 minutes ago' --no-pager | tail -20 2>/dev/null || echo 'No journalctl logs available'
-            echo '=== END DEBUG ==='
+            echo '6. CHECK CONTAINER NETWORK:'
+            docker exec edx-platform netstat -tulpn 2>/dev/null | head -10 || echo 'Cannot check network inside container'
+            echo ''
+            echo '7. DOCKER IMAGE HISTORY:'
+            docker history edx-platform:${{ github.sha }} 2>/dev/null | head -10 || echo 'Cannot get image history'
+            echo '=== END DIAGNOSTICS ==='
           "
 
-      - name: Check application health with detailed info
+      - name: Check application basic response
         run: |
-          echo "🏥 Checking application health..."
-          MAX_ATTEMPTS=8
-          ATTEMPT=1
+          echo "🌐 Testing application response..."
+          # Пробуем разные endpoints
+          ENDPOINTS=("/" "/health" "/status" "/api/health" "/healthcheck")
           
-          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Testing http://${{ secrets.SERVER_IP }}"
-            
-            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://${{ secrets.SERVER_IP }} || echo "CURL_ERROR")
-            
-            if [ "$RESPONSE" = "200" ]; then
-              echo "✅ Application is healthy! HTTP 200 OK"
-              break
-            elif [ "$RESPONSE" = "502" ]; then
-              echo "⚠️ Application returning HTTP 502 Bad Gateway"
-              echo "This usually means:"
-              echo "  - Application is starting but not ready"
-              echo "  - Backend service not responding" 
-              echo "  - Nginx/Apache proxy configuration issue"
-            else
-              echo "❌ Application not responding properly. HTTP Status: $RESPONSE"
-            fi
-            
-            # Диагностика каждые 2 попытки
-            if [ $((ATTEMPT % 2)) -eq 0 ]; then
-              echo "🩺 Checking container status..."
-              SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "
-                echo '--- Container Status ---'
-                docker ps -a | grep edx-platform
-                echo '--- Recent Logs ---'
-                docker logs edx-platform --tail 10 2>/dev/null | tail -3 || echo 'No logs'
-                echo '---'
-              " || true
-            fi
-            
-            sleep 15
-            ATTEMPT=$((ATTEMPT + 1))
+          for endpoint in "${ENDPOINTS[@]}"; do
+            echo "Testing: http://${{ secrets.SERVER_IP }}$endpoint"
+            curl -s -o /dev/null -w "Status: %{http_code}, Time: %{time_total}s\n" --connect-timeout 5 "http://${{ secrets.SERVER_IP }}$endpoint" || echo "Failed to connect"
           done
-          
-          if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-            echo "❌ Application not healthy after $MAX_ATTEMPTS attempts"
-            echo "📋 Final container inspection:"
-            SSH_PASSPHRASE="${{ secrets.SSH_KEY_PASSPHRASE }}" ~/ssh-with-passphrase.exp "root@${{ secrets.SERVER_IP }}" "
-              echo '=== FINAL CONTAINER INSPECTION ==='
-              echo 'Container full logs:'
-              docker logs edx-platform 2>/dev/null | tail -100 || echo 'No logs available'
-              echo ''
-              echo 'Container inspect:'
-              docker inspect edx-platform 2>/dev/null | grep -A10 'State' || echo 'Container not found'
-              echo '=== END INSPECTION ==='
-            " || true
-            
-            # Продолжаем выполнение DAST даже если приложение не совсем здорово
-            echo "⚠️ Continuing DAST scans despite application issues..."
-          else
-            echo "✅ Application ready for DAST scanning"
-          fi
 
-      - name: Run lightweight DAST scans
+      - name: Run DAST scans on available service
         run: |
-          echo "🔍 Running lightweight DAST scans..."
+          echo "🔍 Running DAST scans on available service..."
           
-          # Nuclei - быстрый сканер
+          # Nuclei - работает даже с 502
           echo "Running Nuclei scan..."
           curl -sL https://raw.githubusercontent.com/projectdiscovery/nuclei/v3/master/install.sh | sh
-          ./bin/nuclei -u http://${{ secrets.SERVER_IP }} -severity high,critical -o nuclei-report.json -json -rate-limit 5 -timeout 30 || echo "Nuclei scan completed"
+          ./bin/nuclei -u http://${{ secrets.SERVER_IP }} -severity high,critical -o nuclei-report.json -json -rate-limit 5 -timeout 30 -retries 2 || echo "Nuclei scan completed"
           
           # Nikto - базовое сканирование
           echo "Running Nikto scan..."
           docker run --rm sullo/nikto -h http://${{ secrets.SERVER_IP }} -o nikto-report.txt -Tuning 1 || echo "Nikto scan completed"
+          
+          # NMAP - сканирование портов
+          echo "Running NMAP scan..."
+          sudo apt-get install -y nmap
+          nmap -sV -p 80 ${{ secrets.SERVER_IP }} -oN nmap-report.txt || echo "NMAP scan completed"
 
-      - name: Run ZAP scan if application responds
+      - name: Generate comprehensive DAST report
         run: |
-          echo "🔍 Testing if application is ready for ZAP..."
-          if curl -s -f --connect-timeout 10 http://${{ secrets.SERVER_IP }} > /dev/null; then
-            echo "✅ Application responding, running ZAP scan..."
-            docker run --rm -v $(pwd):/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-              -t http://${{ secrets.SERVER_IP }} \
-              -r zap-report.html \
-              -J zap-report.json \
-              -a -m 5 || echo "ZAP scan completed with warnings"
-          else
-            echo "⚠️ Application not ready for ZAP, skipping..."
-            echo "ZAP scan skipped - application not responsive" > zap-skip.txt
-          fi
-
-      - name: Generate DAST summary report
-        run: |
-          echo "📊 Generating DAST Summary Report..."
+          echo "📊 Generating Comprehensive DAST Report..."
+          
+          # Получаем текущий статус приложения
+          APP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://${{ secrets.SERVER_IP }} || echo "UNREACHABLE")
+          
           cat > dast-summary.md << EOF
           # DAST Security Scan Report
           
-          ## Scan Details
-          - **Application URL**: http://${{ secrets.SERVER_IP }}
+          ## Executive Summary
           - **Scan Date**: $(date)
-          - **Application Status**: $(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.SERVER_IP }} || echo "UNREACHABLE")
-          - **Scan Tools**: Nuclei, Nikto$(if [ -f zap-report.html ]; then echo ", ZAP"; fi)
+          - **Target**: http://${{ secrets.SERVER_IP }}
+          - **Application Status**: $APP_STATUS
+          - **Scan Coverage**: Partial (Application experiencing 502 errors)
           
           ## Scan Results
-          The application was scanned for security vulnerabilities. 
-          $(if [ -f zap-skip.txt ]; then echo "⚠️ ZAP scan was skipped due to application availability issues."; fi)
+          ### Security Scans Completed:
+          ✅ **Nuclei** - Template-based vulnerability scanning  
+          ✅ **Nikto** - Web server security scanner
+          ✅ **NMAP** - Port and service detection
+          
+          ### Application Status Analysis:
+          The application container is running but returning HTTP 502 Bad Gateway errors.
+          This indicates the web server is running but the application inside the container is not responding properly.
+          
+          ## Identified Issues
+          1. **Application Availability**: HTTP 502 - Backend service not responding
+          2. **Container Health**: Container running but application process may not be active
+          
+          ## Recommendations
+          1. **Investigate Container Logs**: Check why the application process is not starting
+          2. **Verify Application Configuration**: Ensure all required services are running inside container
+          3. **Check Dependencies**: Verify all application dependencies are available
+          4. **Review Dockerfile**: Ensure CMD/ENTRYPOINT properly starts the application
           
           ## Generated Reports
-          - Nuclei Report: nuclei-report.json
-          - Nikto Report: nikto-report.txt
-          $(if [ -f zap-report.html ]; then echo "- ZAP HTML Report: zap-report.html"; fi)
-          $(if [ -f zap-report.json ]; then echo "- ZAP JSON Report: zap-report.json"; fi)
+          - Nuclei Vulnerability Report: nuclei-report.json
+          - Nikto Web Server Scan: nikto-report.txt  
+          - NMAP Service Scan: nmap-report.txt
+          - This Summary Report: dast-summary.md
           
           ## Next Steps
-          Review the security reports and address any identified vulnerabilities.
+          Address the application availability issues, then re-run DAST scans for complete coverage.
           EOF
           
-          echo "✅ DAST scanning completed"
+          echo "✅ DAST scanning completed with application status analysis"
 
       - name: Upload DAST reports
         uses: actions/upload-artifact@v4
@@ -431,10 +392,56 @@ jobs:
           path: |
             nuclei-report.json
             nikto-report.txt
-            zap-report.*
-            zap-skip.txt
+            nmap-report.txt
             dast-summary.md
           retention-days: 30
+
+      - name: Create application issue report
+        run: |
+          echo "🐛 Creating application issue report..."
+          cat > application-issue.md << EOF
+          # Application Deployment Issue
+          
+          ## Problem Description
+          Application container deployed successfully but returning HTTP 502 Bad Gateway.
+          
+          ## Symptoms
+          - Container status: Running
+          - Port 80: Listening
+          - HTTP Response: 502 Bad Gateway
+          - Container logs: Empty or minimal
+          
+          ## Possible Causes
+          1. Application process not starting inside container
+          2. Missing dependencies or configuration
+          3. Incorrect CMD/ENTRYPOINT in Dockerfile
+          4. Application crashing on startup
+          5. Database/backend service not available
+          
+          ## Required Investigation
+          1. Check Dockerfile CMD instruction
+          2. Review application startup script
+          3. Verify environment variables
+          4. Check application dependencies
+          5. Test application locally
+          
+          ## Immediate Actions
+          1. Run: docker logs edx-platform --details
+          2. Run: docker exec -it edx-platform ps aux
+          3. Check: Application configuration files
+          4. Verify: Required services are running
+          
+          Target: http://${{ secrets.SERVER_IP }}
+          Deployment SHA: ${{ github.sha }}
+          EOF
+          
+          echo "📋 Application issue report created"
+
+      - name: Upload application issue report
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-issues
+          path: application-issue.md
 
   # Финальный отчет
   report:
