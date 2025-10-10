@@ -43,7 +43,7 @@ jobs:
           echo "Stopping test container..."
           docker stop test-container && echo "✅ Test container stopped"
 
-          # Сканирование безопасности контейнера (минимальный)
+  # Сканирование безопасности контейнера
   sca:
     needs: build
     runs-on: ubuntu-latest
@@ -113,7 +113,7 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-    # Деплой на сервер
+  # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
@@ -196,7 +196,3 @@ jobs:
           echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
           echo "📝 Commit: ${{ github.sha }}"
           echo "🚀 Deployed from branch: ${GITHUB_REF#refs/heads/}"
-      - name: Send deployment notification
-        run: |
-          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
-          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
