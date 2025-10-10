@@ -113,7 +113,7 @@ jobs:
             safety-report.json
             semgrep-report.json
 
-          # Деплой на сервер
+       # Деплой на сервер
   deploy:
     needs: [build, sca, sast]
     runs-on: ubuntu-latest
@@ -131,94 +131,70 @@ jobs:
           echo "🚀 Starting deployment..."
           echo "📦 Branch: ${GITHUB_REF#refs/heads/}"
           echo "🎯 Target: ${{ secrets.SERVER_IP }}"
-          echo "🔐 Authentication: Password"
+          echo "👤 User: ${{ secrets.SERVER_USER }}"
 
-      - name: Install sshpass for password authentication
+      - name: Install SSH tools
         run: |
-          echo "Installing sshpass..."
           sudo apt-get update
-          sudo apt-get install -y sshpass
+          sudo apt-get install -y sshpass openssh-client
 
       - name: Setup SSH known hosts
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null || echo "Known hosts setup completed"
 
-      - name: Test SSH connection with password
+      - name: Debug connection issues
         run: |
-          echo "Testing SSH connection with password..."
-          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh -o BatchMode=no -o ConnectTimeout=10 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ SSH connection successful'" || {
-            echo "❌ SSH connection failed"
-            echo "💡 Check: Password, username, server availability"
-            exit 1
-          }
+          echo "=== Connection Diagnostics ==="
+          echo "1. Testing network connectivity..."
+          ping -c 2 ${{ secrets.SERVER_IP }} || echo "Ping failed - server may be down"
+          
+          echo "2. Testing SSH port..."
+          nc -z -w 5 ${{ secrets.SERVER_IP }} 22 && echo "✅ SSH port 22 is open" || echo "❌ SSH port 22 is closed"
+          
+          echo "3. Testing SSH with verbose output..."
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh -o BatchMode=no -o ConnectTimeout=10 -v ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo 'SSH test'" || echo "SSH connection failed"
+
+      - name: Try alternative authentication methods
+        run: |
+          echo "=== Alternative Authentication Methods ==="
+          
+          # Метод 1: Прямой sshpass
+          echo "Method 1: Direct sshpass"
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo 'Method 1: Success'" || echo "Method 1: Failed"
+          
+          # Метод 2: Через переменную окружения
+          echo "Method 2: Environment variable"
+          SSHPASS='${{ secrets.SSH_PASSWORD }}' sshpass -e ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo 'Method 2: Success'" || echo "Method 2: Failed"
+          
+          # Метод 3: Без strict host checking
+          echo "Method 3: No strict host checking"
+          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo 'Method 3: Success'" || echo "Method 3: Failed"
 
       - name: Build application image
+        if: always()
         run: |
           echo "Building Docker image..."
           docker build -t edx-platform:${{ github.sha }} .
 
-      - name: Deploy to server with password
+      - name: Final connection test
         run: |
-          echo "Deploying to ${{ secrets.SERVER_IP }}..."
-          
-          # Сохраняем образ в файл
-          docker save edx-platform:${{ github.sha }} > /tmp/edx-image.tar
-          
-          # Копируем на сервер используя пароль
-          sshpass -p '${{ secrets.SSH_PASSWORD }}' scp /tmp/edx-image.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
-          
-          # Разворачиваем на сервере используя пароль
-          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
-          set -e
-          echo "=== Starting deployment on server ==="
-          
-          echo "Loading Docker image..."
-          docker load -i /tmp/edx-image.tar
-          
-          echo "Stopping old container..."
-          docker stop edx-platform || true
-          docker rm edx-platform || true
-          
-          echo "Starting new container..."
-          docker run -d \
-            --name edx-platform \
-            --restart unless-stopped \
-            -p 80:80 \
-            edx-platform:${{ github.sha }}
-          
-          echo "Cleaning up..."
-          rm /tmp/edx-image.tar
-          
-          echo "✅ Deployment completed successfully"
-          EOF
-
-      - name: Verify deployment
-        run: |
-          echo "Waiting for application to start..."
-          sleep 30
-          echo "Verifying deployment..."
-          
-          sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
-          set -e
-          echo "=== Deployment Verification ==="
-          echo "Container status:"
-          docker ps | grep edx-platform && echo "✅ Container is running" || echo "❌ Container not found"
-          echo "Application health check:"
-          curl -f http://localhost:80/ && echo "✅ Application is responding" || echo "❌ Application health check failed"
-          echo "=== Verification Complete ==="
-          EOF
-
-      - name: Store URL for DAST
-        run: |
-          echo "APPLICATION_URL=http://${{ secrets.SERVER_IP }}" >> $GITHUB_ENV
-          echo "DAST target: http://${{ secrets.SERVER_IP }}"
-
-      - name: Send deployment notification
-        run: |
-          echo "🎉 Application successfully deployed to ${{ secrets.SERVER_IP }}"
-          echo "🌐 Access your application at: http://${{ secrets.SERVER_IP }}"
-          echo "📝 Commit: ${{ github.sha }}"
-          echo "🚀 Deployed from branch: ${GITHUB_REF#refs/heads/}"
+          echo "=== Final Connection Test ==="
+          if sshpass -p '${{ secrets.SSH_PASSWORD }}' ssh -o BatchMode=no -o ConnectTimeout=10 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "echo '✅ FINAL: SSH successful'"; then
+            echo "🎉 SSH connection successful - ready for deployment"
+          else
+            echo "❌ SSH connection failed - check credentials"
+            echo ""
+            echo "🔧 Common Issues:"
+            echo "1. Wrong username/password"
+            echo "2. Server firewall blocking SSH"
+            echo "3. SSH service not running on server"
+            echo "4. IP address changed"
+            echo ""
+            echo "💡 Questions to verify:"
+            echo "- Can you SSH manually from your local machine?"
+            echo "- Is the password definitely correct?"
+            echo "- Is the server definitely ${{ secrets.SERVER_IP }}?"
+            exit 1
+          fi
