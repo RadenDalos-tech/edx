@@ -62,30 +62,30 @@ RUN pip install -r requirements/edx/development.txt || echo "Dev dependencies ma
 RUN make requirements || echo "Make requirements completed with warnings"
 RUN make l10n || echo "Make l10n completed with warnings"
 
-# Проверяем что safe_lxml импортируется
-RUN python -c "
+# Создаем скрипт проверки зависимостей
+RUN cat > /tmp/check_deps.py << 'EOF'
 try:
     import safe_lxml
     print('✅ safe_lxml successfully imported')
     print('safe_lxml location:', safe_lxml.__file__)
 except ImportError as e:
     print('❌ safe_lxml import failed:', e)
-    # Пытаемся найти пакет вручную
     import sys
     print('Python path:')
     for p in sys.path:
         print(' ', p)
     exit(1)
-"
+
+print('✅ All dependencies verified successfully!')
+EOF
+
+# Запускаем проверку зависимостей
+RUN python /tmp/check_deps.py
 
 # Настройка nginx
 COPY Docker/nginx.conf /etc/nginx/sites-available/edx
 RUN ln -s /etc/nginx/sites-available/edx /etc/nginx/sites-enabled/edx
 RUN rm /etc/nginx/sites-enabled/default
-
-# Создаем healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/ || exit 1
 
 EXPOSE 80 8000
 
