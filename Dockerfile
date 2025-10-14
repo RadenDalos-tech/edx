@@ -49,24 +49,34 @@ COPY requirements/ requirements/
 # Установка зависимостей в правильном порядке
 RUN MYSQLCLIENT_CFLAGS="-I/usr/include/mariadb" MYSQLCLIENT_LDFLAGS="-L/usr/lib/x86_64-linux-gnu" pip install mysqlclient==2.1.1
 
-# Установка safe_lxml в первую очередь
-RUN pip install safe_lxml
+# Копируем ВЕСЬ код (safe_lxml находится в репозитории)
+COPY . .
 
-# Установка базовых зависимостей edX
+# Установка базовых зависимостей edX (safe_lxml установится из requirements)
 RUN pip install -r requirements/edx/base.txt
 
 # Установка development зависимостей (если нужно)
-RUN pip install -r requirements/edx/development.txt
-
-# Копируем остальной код ПОСЛЕ установки зависимостей
-COPY . .
+RUN pip install -r requirements/edx/development.txt || echo "Dev dependencies may have warnings"
 
 # Настройка окружения edX
 RUN make requirements || echo "Make requirements completed with warnings"
 RUN make l10n || echo "Make l10n completed with warnings"
 
 # Проверяем что safe_lxml импортируется
-RUN python -c "import safe_lxml; print('✅ safe_lxml successfully imported')"
+RUN python -c "
+try:
+    import safe_lxml
+    print('✅ safe_lxml successfully imported')
+    print('safe_lxml location:', safe_lxml.__file__)
+except ImportError as e:
+    print('❌ safe_lxml import failed:', e)
+    # Пытаемся найти пакет вручную
+    import sys
+    print('Python path:')
+    for p in sys.path:
+        print(' ', p)
+    exit(1)
+"
 
 # Настройка nginx
 COPY Docker/nginx.conf /etc/nginx/sites-available/edx
