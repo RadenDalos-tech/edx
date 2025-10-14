@@ -9,14 +9,26 @@ on:
 
 jobs:
   # Сборка образа ОДИН раз
-  build:
+    build:
     runs-on: ubuntu-latest
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         
+      - name: Debug repository structure
+        run: |
+          echo "🔍 Searching for safe_lxml..."
+          find . -name "*safe_lxml*" -type d | head -10
+          find . -name "safe_lxml" -type d | head -10
+          echo ""
+          echo "📁 Checking common locations:"
+          ls -la | grep safe_lxml || echo "Not in root"
+          ls -la lib/ | grep safe_lxml || echo "Not in lib/"
+          ls -la src/ | grep safe_lxml || echo "Not in src/"
+          echo ""
+          echo "📋 Checking requirements files:"
+          grep -r "safe_lxml" requirements/ || echo "Not in requirements"
+          
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         
