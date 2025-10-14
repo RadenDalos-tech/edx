@@ -58,7 +58,7 @@ RUN make requirements || echo "Make requirements completed with warnings"
 RUN make l10n || echo "Make l10n completed with warnings"
 
 # Настройка nginx
-COPY docker/nginx.conf /etc/nginx/sites-available/edx
+COPY Docker/nginx.conf /etc/nginx/sites-available/edx
 RUN ln -s /etc/nginx/sites-available/edx /etc/nginx/sites-enabled/edx
 RUN rm /etc/nginx/sites-enabled/default
 
