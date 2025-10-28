@@ -4,6 +4,10 @@ FROM ubuntu:20.04
 ENV TZ=UTC
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
+# Используем альтернативные зеркала для Ubuntu 20.04
+RUN sed -i 's/archive.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list && \
+    sed -i 's/security.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list
+
 # Обновление пакетов и установка базовых зависимостей
 RUN apt-get update && apt-get install -y \
     software-properties-common \
