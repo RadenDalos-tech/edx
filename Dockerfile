@@ -1,21 +1,11 @@
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 # Установка таймзоны чтобы избежать интерактивного диалога
 ENV TZ=UTC
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Используем альтернативные зеркала для Ubuntu 20.04
-RUN sed -i 's/archive.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list && \
-    sed -i 's/security.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list
-
-# Обновление пакетов и установка базовых зависимостей
+# Обновление пакетов и установка Python 3.8 из стандартных репозиториев
 RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update
-
-# Установка только необходимых системных зависимостей (без конфликтующих MySQL пакетов)
-RUN apt-get install -y \
     python3.8 \
     python3-pip \
     python3-venv \
@@ -39,7 +29,7 @@ WORKDIR /edx/app
 COPY . .
 
 # Создание виртуального окружения
-RUN python3 -m venv /edx/venv
+RUN python3.8 -m venv /edx/venv
 ENV PATH="/edx/venv/bin:$PATH"
 
 # Установка совместимой версии pip для старых пакетов
@@ -68,5 +58,5 @@ RUN rm /etc/nginx/sites-enabled/default
 
 EXPOSE 80
 
-# Запуск приложения через скрипт
-CMD sh -c '/edx/venv/bin/python /edx/app/manage.py runserver 0.0.0.0:8000 & nginx -g "daemon off;"'
+# Запуск приложения через скрипт (исправляем JSON формат)
+CMD ["sh", "-c", "/edx/venv/bin/python /edx/app/manage.py runserver 0.0.0.0:8000 & nginx -g \"daemon off;\""]
