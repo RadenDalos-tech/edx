@@ -4,9 +4,9 @@ FROM ubuntu:22.04
 ENV TZ=UTC
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Обновление пакетов и установка Python 3.8 из стандартных репозиториев
+# Обновление пакетов и установка Python 3.10 из стандартных репозиториев
 RUN apt-get update && apt-get install -y \
-    python3.8 \
+    python3 \
     python3-pip \
     python3-venv \
     pandoc \
@@ -29,7 +29,7 @@ WORKDIR /edx/app
 COPY . .
 
 # Создание виртуального окружения
-RUN python3.8 -m venv /edx/venv
+RUN python3 -m venv /edx/venv
 ENV PATH="/edx/venv/bin:$PATH"
 
 # Установка совместимой версии pip для старых пакетов
